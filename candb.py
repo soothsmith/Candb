@@ -6,12 +6,17 @@ This module provides CAN database(*dbc) and matrix(*xls) operation functions.
 """
 import re
 import xlrd
-import sys
+import sys, importlib
 import traceback
 import os
+#from builtins import True
+#from scipy.stats.tests.test_discrete_basic import vals
 
-reload(sys)
-sys.setdefaultencoding('utf-8')
+#if sys.version_info[0] < 3:
+#    reload(sys)
+#    sys.setdefaultencoding('utf-8')
+#else:
+#    importlib.reload(sys)
 
 # enable or disable debug info display, this switch is controlled by -d option.
 debug_enable = False
@@ -33,13 +38,13 @@ ATTR_DEFS_INIT = [
     ["Message", "DiagRequest",           "Enumeration", "",  "",         "No",                 ["No",    "Yes"]],
     ["Message", "DiagResponse",          "Enumeration", "",  "",         "No",                 ["No",    "Yes"]],
     ["Message", "DiagState",             "Enumeration", "",  "",         "No",                 ["No",    "Yes"]],
+    ["Message", "GenMsgSendType",        "Enumeration", "",  "",         "noMsgSendType",      ["cyclic", "reserved","cyclicIfActive","reserved","reserved","reserved","reserved","reserved","noMsgSendType"]],
     ["Message", "GenMsgCycleTime",       "Integer",     0,   0,          0,                    []],
     ["Message", "GenMsgCycleTimeActive", "Integer",     0,   0,          0,                    []],
     ["Message", "GenMsgCycleTimeFast",   "Integer",     0,   0,          0,                    []],
     ["Message", "GenMsgDelayTime",       "Integer",     0,   0,          0,                    []],
     ["Message", "GenMsgILSupport",       "Enumeration", "",  "",         "No",                 ["No",    "Yes"]],
     ["Message", "GenMsgNrOfRepetition",  "Integer",     0,   0,          0,                    []],
-    ["Message", "GenMsgSendType",        "Enumeration", "",  "",         "cycle",              ["cycle", "NoSendType", "IfActive"]],
     ["Message", "GenMsgStartDelayTime",  "Integer",     0,   65535,      0,                    []],
     ["Message", "NmMessage",             "Enumeration", "",  "",         "No",                 ["No",    "Yes"]],
     ["Network", "BusType",               "String",      "",  "",         "CAN",                []],
@@ -47,17 +52,28 @@ ATTR_DEFS_INIT = [
     ["Network", "NmBaseAddress",         "Hex",         0x0, 0x7FF,      0x400,                []],
     ["Network", "NmMessageCount",        "Integer",     0,   255,        128,                  []],
     ["Network", "NmType",                "String",      "",  "",         "",                   []],
-    ["Network", "DBName",                "String",      "",  "",         "",                   []],
+    ["Network", "DBName",                "String",      "",  "",         "CAN",                []],
+    ["Network", "DatabaseVersion",       "Integer",     0,   0,          0,                    []],
+    ["Network", "ProtocolType",          "String",      "",  "",         "J1939",              []],
+    ["Network", "SAE_J1939_75_SpecVersion", "String",   "",  "",         "",                   []],
+    ["Network", "SAE_J1939_21_SpecVersion", "String",   "",  "",         "",                   []], 
+    ["Network", "SAE_J1939_73_SpecVersion", "String",   "",  "",         "",                   []],
+    ["Network", "SAE_J1939_71_SpecVersion", "String",   "",  "",         "",                   []], 
     ["Node",    "DiagStationAddress",    "Hex",         0x0, 0xFF,       0x0,                  []],
     ["Node",    "ILUsed",                "Enumeration", "",  "",         "No",                 ["No",    "Yes"]],
     ["Node",    "NmCAN",                 "Integer",     0,   2,          0,                    []],
     ["Node",    "NmNode",                "Enumeration", "",  "",         "Not",                ["Not",   "Yes"]],
     ["Node",    "NmStationAddress",      "Hex",         0x0, 0xFF,       0x0,                  []],
     ["Node",    "NodeLayerModules",      "String",      "",  "",         "CANoeILNVector.dll", []],
+    ["Signal",  "SigType",               "Enumeration", "",  "",         "",                   ["Default", "Range", "RangeSigned", "ASCII", "Discrete", "Control", "ReferencePGN", "DTC", "StringDelimiter", "StringLength", "StringLengthControl"]],
     ["Signal",  "GenSigInactiveValue",   "Integer",     0,   0,          0,                    []],
-    ["Signal",  "GenSigSendType",        "Enumeration", "",  "",         "cycle",              ["cycle", "OnChange",   "OnWrite",    "IfActive", "OnChangeWithRepetition", "OnWriteWithRepetition", "IfActiveWithRepetition"]],
+    ["Signal",  "GenSigSendType",        "Enumeration", "",  "",         "",                   ["cyclic", "OnChange", "OnWrite", "IfActive", "OnChangeWithRepetition", "OnWriteWithRepetition", "IfActiveWithRepetition", "NoSigSendtype"]],
     ["Signal",  "GenSigStartValue",      "Integer",     0,   0,          0,                    []],
     ["Signal",  "GenSigTimeoutValue",    "Integer",     0,   1000000000, 0,                    []],
+    ["Signal",  "SPN",                   "Integer",     0,   1000000000, 0,                    []],
+    ["Signal",  "SAEDocument",           "String",      "",  "",         "J1939",              []],
+    ["Message", "VFrameFormat",          "Enumeration", 0,   8,          "ExtendedCAN",        ["StandardCAN", "ExtendedCAN", "reserved", "J1939PG"]],
+    ["Signal",  "SystemSignalLongSymbol","String",      "",  "",         "STRING",             []],
 ]
 
 # matrix template dict
@@ -72,11 +88,12 @@ MATRIX_TEMPLATE_MAP = {
     "msg_cycle_col":        ["MsgCycleTime"],
     "msg_len_col":          ["MsgLength"],
     "sig_name_col":         ["SignalName"],
-    "sig_comment_col":      ["SignalDescription"],
+    "sig_mltplx_col":       ["MultiplexerIndicator"],
+    "sig_comment_col":      ["Description"],
     "sig_byte_order_col":   ["ByteOrder"],
     "sig_start_bit_col":    ["StartBit"],
     "sig_len_col":          ["BitLength"],
-    "sig_value_type_col":   ["DateType"],
+    "sig_value_type_col":   ["DataType"],
     "sig_factor_col":       ["Resolution"],
     "sig_offset_col":       ["Offset"],
     "sig_min_phys_col":     ["SignalMin.Value(phys)"],
@@ -89,7 +106,8 @@ MATRIX_TEMPLATE_MAP = {
 # excel workbook sheets with name in this list are ignored
 MATRIX_SHEET_IGNORE = ["Cover", "History", "Legend", "ECU Version", ]
 
-NODE_NAME_MAX = 8
+### changed from 8 to 16 based on an example file.
+NODE_NAME_MAX = 16
 
 
 class MatrixTemplate(object):
@@ -101,6 +119,7 @@ class MatrixTemplate(object):
         self.msg_cycle_col = 0
         self.msg_len_col = 0
         self.sig_name_col = 0
+        self.sig_mltplx_col = 0
         self.sig_comment_col = 0
         self.sig_byte_order_col = 0
         self.sig_start_bit_col = 0
@@ -118,7 +137,7 @@ class MatrixTemplate(object):
         self.start_row = 0  # start row number of valid data
 
     def members(self):
-        return sorted(vars(self).items(), key=lambda item:item[1])
+        return sorted(vars(self).items(), key=lambda item:item[1] if type(item[1]) == int else None)
 
     def __str__(self):
         s = []
@@ -154,18 +173,18 @@ def get_list_item(list_object):
     """
     list_index = 0
     for item in list_object:
-        print "   %2d %s" %(list_index, item)
+        print( "   %2d %s" %(list_index, item))
         list_index += 1
     while True:
-        user_input = raw_input()
+        user_input = input()
         if user_input.isdigit():
             select_index = int(user_input)
             if select_index < len(list_object):
                 return list_object[select_index]
             else:
-                print "input over range"
+                print ("input over range")
         else:
-            print "input invalid"
+            print ("input invalid")
 
 
 def parse_sheetname(workbook):
@@ -183,13 +202,13 @@ def parse_sheetname(workbook):
     if len(sheets)==1:
         return sheets[0]
     elif len(sheets)>=2:
-        print "Select one sheet blow:"
-        # print "  ","  ".join(sheets)
+        print ("Select one sheet below:")
+        # print ("  ","  ".join(sheets)
         # return raw_input()
         return get_list_item(sheets)
     else:
-        print "Select one sheet blow:"
-        # print "  ","  ".join(workbook.sheet_names())
+        print ("Select one sheet blow:")
+        # print ("  ","  ".join(workbook.sheet_names())
         # return raw_input()
         return get_list_item(workbook.sheet_names())
 
@@ -204,8 +223,8 @@ def parse_template(sheet):
     # find table header row
     header_row_num = 0xFFFF
     for row_num in range(0, sheet.nrows):
-        if sheet.row_values(row_num)[0].find("Msg Name") != -1:
-            #print "table header row number: %d" % row_num
+        if sheet.row_values(row_num)[0].find("MsgName") != -1:
+            #print ("table header row number: %d" % row_num
             header_row_num = row_num
     if header_row_num == 0xFFFF:
         raise ValueError("Can't find \"Msg Name\" in this sheet")
@@ -223,13 +242,18 @@ def parse_template(sheet):
     template.start_row = header_row_num + 1
     # get ECU nodes
     node_start_col = template.sig_val_col
-    for col in range(node_start_col, sheet.ncols):
-        value = sheet.row_values(header_row_num)[col]
-        if value is not None and value != '':
-            value = value.replace(" ","")
-            if len(value) <= NODE_NAME_MAX:
-                template.nodes[value] = col
-    # print "detected nodes: ", template.nodes
+    try: 
+        for col in range(node_start_col, sheet.ncols):
+            value = sheet.row_values(header_row_num)[col]
+            if value is not None and value != '':
+                value = value.replace(" ","")
+                if len(value) <= NODE_NAME_MAX:
+                    if value in template.nodes:
+                        raise ValueError           ### added to exit if duplicate nodenames.
+                    template.nodes[value] = col
+    except ValueError:
+        exit ("ValueError: Duplicate value in Node Colums: {}".format(value))
+    # print ("detected nodes: ", template.nodes
     return template
 
 
@@ -239,22 +263,26 @@ def parse_sig_vals(val_str):
 
     Get signal key:value pairs from string. Returns None if failed.
     """
-    vals = {}
+    sigvals = {}
     if val_str is not None and val_str != '':
         token = re.split('[\;\:\\n]+', val_str.strip())
+        #print(token[1], len(token))
         if len(token) >= 2:
             if len(token) % 2 == 0:
                 for i in range(0, len(token), 2):
                     try:
-                        val = getint(token[i])
+                        sigval = getint(token[i])
                         desc = token[i + 1].replace('\"','').strip()
-                        vals[desc] = val
+                        #vals[desc] = val  # descriptions are not unique, e.g. many values being assigned as "Reserved"
+                        sigvals[sigval] = desc
+                        ####print(val, '', end='')
                     except ValueError:
-                        # print "waring: ignored signal value definition: " ,token[i], token[i+1]
+                        print ("waring: ignored signal value definition: " ,token[i], token[i+1])
                         raise
-                return vals
+                ###print()
+                return sigvals
             else:
-                # print "waring: ignored signal value description: ", val_str
+                # print ("waring: ignored signal value description: ", val_str
                 raise ValueError()
         else:
             raise ValueError(val_str)
@@ -280,40 +308,46 @@ def getint(str, default=None):
             return val
         except (ValueError, TypeError):
             try:
+                str = str.replace('0x','')
                 val = int(str, 16)
                 return val
             except:
                 raise
 
-def motorola_msb_2_motorola_backward(start_bit, sig_size, frame_size):
-    msb_bytes            = start_bit//8
-    msb_byte_bit         = start_bit%8
-    byte_remain_bits     = msb_byte_bit + 1
-    remain_bits          = sig_size
-    backward_start_bit   = (frame_size *8 -1) - (8 * msb_bytes) - (7 - msb_byte_bit) 
-    while remain_bits > 0:
-        if remain_bits > byte_remain_bits:
-            remain_bits         -= byte_remain_bits
-            backward_start_bit  -= byte_remain_bits
-            byte_remain_bits    = 8
-        else:
-            backward_start_bit = backward_start_bit - remain_bits + 1 
-            remain_bits = 0
-    return backward_start_bit
+#def motorola_msb_2_motorola_backward(start_bit, sig_size, frame_size):
+#    msb_bytes            = start_bit//8
+#    msb_byte_bit         = start_bit%8
+#    byte_remain_bits     = msb_byte_bit + 1
+#    remain_bits          = sig_size
+#    backward_start_bit   = (frame_size *8 -1) - (8 * msb_bytes) - (7 - msb_byte_bit) 
+#    while remain_bits > 0:
+#        if remain_bits > byte_remain_bits:
+#            remain_bits         -= byte_remain_bits
+#            backward_start_bit  -= byte_remain_bits
+#            byte_remain_bits    = 8
+#        else:
+#            backward_start_bit = backward_start_bit - remain_bits + 1 
+#            remain_bits = 0
+#    return backward_start_bit
 
 class CanNetwork(object):
     def __init__(self, init=True):
         self.nodes = []
         self.messages = []
-        self.name = 'CAN'
+        self.name = '' ###'CAN'
         self.val_tables = []
         self.version = ''
         self.new_symbols = NEW_SYMBOLS
         self.attr_defs = []
+        self.attrs = {}            ###  attrs[namestring] = valuestring
         self._filename = ''
         
         if init:
             self._init_attr_defs()
+            for attr in self.attr_defs:
+                if attr.name == "DBName":
+                    self.attrs["DBName"] = attr.default
+                    break
 
     def _init_attr_defs(self):
         for attr_def in ATTR_DEFS_INIT:
@@ -328,7 +362,7 @@ class CanNetwork(object):
         # ! new_symbols
         lines.append('NS_ :\n')
         for symbol in self.new_symbols:
-            lines.append('        ' + symbol + '\n')
+            lines.append('    ' + symbol + '\n')
         lines.append('\n')
 
         # ! bit_timming
@@ -337,9 +371,12 @@ class CanNetwork(object):
 
         # ! nodes
         line = ["BU_:"]
-        for node in self.nodes:
-            line.append(node)
-        lines.append(' '.join(line) + '\n\n\n')
+        if len(self.nodes) > 0:
+            for node in self.nodes:
+                line.append(node)
+            lines.append(' '.join(line) + '\n\n\n')
+        else: 
+            lines.append(line + '\n\n\n')
 
         # ! messages
         for msg in self.messages:
@@ -349,7 +386,10 @@ class CanNetwork(object):
         # ! comments
         lines.append('''CM_ " "''' + ";" + "\n")
         for msg in self.messages:
-            # <message comment are ignored> # todo
+            comment = msg.comment
+            if comment != "":
+                line = ["CM_", "BO_", str(msg.msg_id), "\"" + comment + "\"" + ";"]
+                lines.append(" ".join(line) + '\n')
             for sig in msg.signals:
                 comment = sig.comment
                 if comment != "":
@@ -404,37 +444,66 @@ class CanNetwork(object):
 
         # ! attribution value of object
         # build-in value "DBName"
-        line = ["BA_"]
-        line.append('''"DBName"''')
-        line.append(self.name + ";")
-        lines.append(" ".join(line) + '\n')
+        ###line = ["BA_"]
+        ###line.append('''"DBName"''')
+        ###line.append(self.name + ";")
+        ###lines.append(" ".join(line) + '\n')
+        for atrdefs in self.attr_defs:
+            if atrdefs.object_type == "Network":
+                for atr in self.attrs:
+                    if atr == atrdefs.name:
+                        line = ["BA_"]
+                        line.append('\"' + atr + '\"')
+                        line.append('\"' + self.attrs[atr] + '\";')
+                        lines.append(" ".join(line) + '\n')
+            
+        
         # ! message attribution values
         for msg in self.messages:
             for attr_def in self.attr_defs:
-                if (msg.attrs.has_key(attr_def.name)):
-                    if (msg.attrs[attr_def.name] != attr_def.default):
+                #if (msg.attrs.has_key(attr_def.name)):
+                if attr_def.name in msg.attrs:
+                    if (msg.attrs[attr_def.name] != ''):  ### attr_def.default):
                         line = ["BA_"]
                         line.append("\"" + attr_def.name + "\"")
                         line.append("BO_")
                         line.append(str(msg.msg_id))
-                        if (attr_def.value_type == "Enumeration"):
+                        if attr_def.value_type == "Enumeration":
                             # write enum index instead of enum value
                             line.append(str(attr_def.values.index(str(msg.attrs[attr_def.name]))) + ";")
+                        elif attr_def.value_type == "String":
+                            line.append('\"' + msg.attrs[attr_def.name] + "\";")
                         else:
                             line.append(str(msg.attrs[attr_def.name]) + ";")
                         lines.append(" ".join(line) + '\n')
         # ! signal attribution values
         for msg in self.messages:
             for sig in msg.signals:
-                if sig.init_val is not None and sig.init_val is not 0:
-                    line = ["BA_"]
-                    line.append('''"GenSigStartValue"''')
-                    line.append("SG_")
-                    line.append(str(msg.msg_id))
-                    line.append(sig.name)
-                    line.append(str(sig.init_val))
-                    line.append(';')
-                    lines.append(' '.join(line) + '\n')
+                for attr_def in self.attr_defs:
+                    if attr_def.name in sig.attrs:
+                        if (sig.attrs[attr_def.name] != ''):                            
+                #if sig.init_val is not None: ### and sig.init_val is not 0:
+                #    line = ["BA_"]
+                #    line.append('''"GenSigStartValue"''')
+                #    line.append("SG_")
+                #    line.append(str(msg.msg_id))
+                #    line.append(sig.name)
+                #    line.append(str(sig.init_val))
+                #    line.append(';')
+                #    lines.append(' '.join(line) + '\n')
+                            line = ["BA_"] 
+                            line.append('\"' + attr_def.name + '\"')
+                            line.append("SG_")
+                            line.append(str(msg.msg_id))
+                            line.append(sig.name)
+                            if (attr_def.value_type == "Enumeration"):
+                                line.append(str(attr_def.values.index(str(sig.attrs[attr_def.name]))) + ';')
+                            elif (attr_def.value_type == "String"):
+                                line.append('\"' + sig.attrs[attr_def.name] + '\";')
+                            else:
+                                line.append(str(sig.attrs[attr_def.name]) + ';')
+                            #line.append(str(sig.attrs[attr]))
+                            lines.append(' '.join(line) + '\n')
         # ! Value table define
         for msg in self.messages:
             for sig in msg.signals:
@@ -442,9 +511,12 @@ class CanNetwork(object):
                     line = ['VAL_']
                     line.append(str(msg.msg_id))
                     line.append(sig.name)
+                    #if debug_enable: print("VALUES: ", end=''); print(sig.values)
                     for key in sig.values:
-                        line.append(str(sig.values[key]))
-                        line.append('"'+ key +'"')
+                        line.append(str(key))
+                        line.append('"' + sig.values[key] + '"')
+                        #line.append(str(sig.values[key]))
+                        #line.append('"'+ key +'"')
                     line.append(';')
                     lines.append(' '.join(line) + '\n')
         return ''.join(lines)
@@ -473,12 +545,14 @@ class CanNetwork(object):
         for attr_def in self.attr_defs:
             if attr_def.name == name:
                 ret = attr_def
+                break
         return ret
 
     def set_msg_attr(self, msg_id, attr_name, value):
         for msg in self.messages:
             if msg.msg_id == msg_id:
                 msg.set_attr(attr_name, value)
+                break
 
     def get_msg_attr(self, msg_id, attr_name):
         value = None
@@ -490,6 +564,7 @@ class CanNetwork(object):
                     attr_def = self.get_attr_def(attr_name)
                     if attr_def is not None:
                         value = attr_def.default
+                        break
         return value
 
     def set_sig_attr(self, msg_id, sig_name, attr_name, attr_value):
@@ -498,6 +573,7 @@ class CanNetwork(object):
                 for sig in msg.signals:
                     if sig.name == sig_name:
                         sig.set_attr(attr_name, attr_value)
+                        break
 
 
     def convert_attr_def_value(self, attr_def_name, value_str):
@@ -512,14 +588,15 @@ class CanNetwork(object):
         for attr_def in self.attr_defs:
             if attr_def.name == attr_def_name:
                 attr_def_value_type = attr_def.value_type
-                attr_def_values     = attr_def.values
+                attr_def_values     = [attr for attr in attr_def.values]
+                if debug_enable: print(attr_def.name, attr_def_name, attr_def.values, attr_def_values)
                 break
         if attr_def_value_type == 'Integer':
             value  = int(value_str)
         elif attr_def_value_type == 'Float':
             value  = float(value_str)
         elif attr_def_value_type == 'String':
-            value  = value_str 
+            value  = value_str.strip('\"')
         elif attr_def_value_type == 'Enumeration':
             if value_str.isdigit():
                 value  = attr_def_values[int(value_str)]
@@ -532,6 +609,35 @@ class CanNetwork(object):
         else:
             raise ValueError("Unkown attribution definition value type: {}".format(attr_def_value_type))
         return value
+
+    def set_sig_comment(self, msg_id, signame, comment):
+        for msg in self.messages: 
+            if msg.msg_id == msg_id:
+                for signal in msg.signals:
+                    if signal.name == signame: 
+                        signal.set_comment(comment)
+                        break
+    
+    def append_sig_comment(self, msg_id, signame, comment):
+        for msg in self.messages: 
+            if msg.msg_id == msg_id:
+                for signal in msg.signals:
+                    if signal.name == signame: 
+                        signal.append_comment(comment)
+                        break
+
+    def set_msg_comment(self, msg_id, comment):
+        for msg in self.messages: 
+            if msg.msg_id == msg_id:
+                msg.set_comment(comment)
+                break
+
+    def append_msg_comment(self, msg_id, comment):
+        for msg in self.messages: 
+            if msg.msg_id == msg_id:
+                msg.append_comment(comment)
+                break
+
 
     def sort(self, option='id'):
         messages = self.messages
@@ -547,11 +653,11 @@ class CanNetwork(object):
             raise ValueError("Invalid sort option \'{}\'".format(option))
 
     def load(self, path):
-        dbc = open(path, 'r')
-
-        for line in dbc:
-            line_trimmed = line.strip()
-            line_split = re.split('[\s\(\)\[\]\|\,\:\@\;]+', line_trimmed)
+        dbcline = (line.rstrip() for line in open(path, 'r'))  ### generator to read lines from the file helps with multiline comments
+        
+        for line_rtrimmed in dbcline:
+            line_trimmed = line_rtrimmed.lstrip()
+            line_split = re.split('[\s\(\)\[\]\|\,\:\;]+', line_trimmed) ### needs better regex to account for optional multiplexor indicator: '', 'M', 'm num', num = 0, 1, 2, ...
             if len(line_split) >= 2:
                 # Node
                 if line_split[0] == 'BU_':
@@ -565,20 +671,101 @@ class CanNetwork(object):
                     msg.sender = line_split[4]
                     self.messages.append(msg)
                 # Signal
-                elif line_split[0] == 'SG_':
+                elif line_split[0] == 'SG_':   ### if SG_, regex "line_trimmed" to break up fields
                     sig = CanSignal()
-                    sig.name        = line_split[1]
-                    sig.start_bit   = int(line_split[2])
-                    sig.sig_len     = int(line_split[3])
-                    sig.byte_order  = line_split[4][:1]
-                    sig.value_type  = line_split[4][1:]
-                    sig.factor      = line_split[5]
-                    sig.offset      = line_split[6]
-                    sig.min         = line_split[7]
-                    sig.max         = line_split[8]
-                    sig.unit        = line_split[9][1:-1]  # remove quotation makes
-                    sig.receivers   = line_split[10:]  # receiver is a list
+                    ###                        1=name 2=Multiplexer   3=start_bit 4=len 5=endian 6=sign   7=factor       8=offset             9=min          10=max       11=unit 12=receivers
+                    ###                         (1)       (2)             (3)   (4)    (5)   (6)            (7)            (8)                 (9)            (10)          (11)     (12)
+                    if debug_enable: print(line_trimmed)
+                    match = re.match(r'SG_\s+(\w+)\s+([\w\d]*)\s*\:\s+(\d+)\|(\d+)\@(\d)([\+\-])\s+\(([eE\d\.\+\-]+)\,([eE\d\.\+\-]+)\)\s+\[([eE\d\.\-\+]+)\|([eE\d\.\-\+]+)]\s+\"(.*)\"\s+(.*)', line_trimmed)
+                    if match:
+                        sig.name          = match.group(1)
+                        sig.mux_indicator = match.group(2) # saves '', 'M', or 'mx' where x is an int
+                        sig.start_bit     = int(match.group(3))
+                        sig.sig_len       = int(match.group(4))
+                        sig.byte_order    = match.group(5)
+                        sig.value_type    = match.group(6)
+                        sig.factor        = match.group(7)
+                        sig.offset        = match.group(8)
+                        sig.min           = match.group(9)
+                        sig.max           = match.group(10)
+                        sig.unit          = match.group(11)
+                        sig.receivers     = re.split('\s+', match.group(12)) # split receivers to list
+                    #else:
+                    #    sig.name        = line_split[1]
+                    #    sig.start_bit   = int(line_split[2])
+                    #    sig.sig_len     = int(line_split[3])
+                    #    sig.byte_order  = line_split[4][:1]
+                    #    sig.value_type  = line_split[4][1:]
+                    #    sig.factor      = line_split[5]
+                    #    sig.offset      = line_split[6]
+                    #    sig.min         = line_split[7]
+                    #    sig.max         = line_split[8]
+                    #    sig.unit        = line_split[9][1:-1]  # remove quotation markes
+                    #    sig.receivers   = line_split[10:]  # receiver is a list
                     msg.signals.append(sig)
+                    
+                # read in comments from Messages or Signals
+                elif line_split[0] == 'CM_':
+                    #print(line_trimmed)
+                    match0 = re.match(r'CM_\s\"\s*\";', line_trimmed)
+                    if match0:
+                        #print(line_trimmed)
+                        next   # throw away the generic comment
+                    match1 = re.match(r'CM_\s+(SG_|BO_)\s+(\d+)\s+([\w\d_]*)\s*\"(.+)\";$', line_trimmed) ### completed comment line ends with ";
+                    if match1:
+                        end = True
+                        comment_type = match1.group(1)
+                        message_id = int(match1.group(2))
+                        signal_name = match1.group(3)
+                        comment_string = match1.group(4).replace("\r", "\n")
+                        if debug_enable: print("has end:", str(message_id), signal_name, comment_string)
+                        # save comment to message/signal
+                        if comment_type == "BO_":
+                            self.set_msg_comment(message_id, comment_string)
+                        elif comment_type == "SG_":
+                            self.set_sig_comment(message_id, signal_name, comment_string)
+                    #                            1 = message id, 2 = signal name, 3 = comment content
+                    else: 
+                        match2 = re.match(r'CM_\s+(SG_|BO_)\s+(\d+)\s+([\w\d_]*)\s*\"(.+)$', line_trimmed) ### start of comment line but no "; to finish it
+                        if match2: 
+                            end = False
+                            comment_type = match2.group(1)
+                            message_id = int(match2.group(2))
+                            signal_name = match2.group(3)
+                            comment_string = match2.group(4)
+                            if comment_type == "BO_":
+                                self.set_msg_comment(message_id, comment_string.strip(';').strip('\"'))
+                            else:
+                                if debug_enable: print("no end:", str(message_id), signal_name, comment_string)
+                                self.set_sig_comment(message_id, signal_name, comment_string + '\n')
+                            while(end==False):
+                                line_rtrimmed = next(dbcline)                                                  ### Note - reading next line here
+                                if line_rtrimmed == '' or line_rtrimmed == '\n':                               ### blank line in comment
+                                    if comment_type == "BO_":
+                                        self.append_msg_comment(message_id, '\n')
+                                    else: 
+                                        if debug_enable: print("cont:...", str(message_id), signal_name, "null line")
+                                        self.append_sig_comment(message_id, signal_name, '\n')
+                                else: 
+                                    match3 = re.match(r'^(?!CM_)(.+)\";$', line_rtrimmed)                      ### continued comment line does not start with CM_ and the "; is detected
+                                    if match3:
+                                        comment_string = match3.group(1)
+                                        end = True
+                                        if comment_type == "BO_":
+                                            self.append_msg_comment(message_id, comment_string)
+                                        else: 
+                                            if debug_enable: print("final:  ", str(message_id), signal_name, comment_string)
+                                            self.append_sig_comment(message_id, signal_name, comment_string)
+                                    else: 
+                                        match4 = re.match(r'^(?!CM_)(.+)(?!";)$', line_rtrimmed)               ### continued comment line does not start with CM_ and no "; is detected
+                                        if match4:
+                                            comment_string = match4.group(1)
+                                            if comment_type == "BO_":
+                                                self.append_msg_comment(message_id, comment_string)
+                                            else: 
+                                                if debug_enable: print("cont:  ", str(message_id), signal_name, comment_string)
+                                                self.append_sig_comment(message_id, signal_name, comment_string + '\n')
+                    
                 # Attribution Definition
                 elif line_split[0] == 'BA_DEF_':
                     attr_def_object             = line_split[1]
@@ -588,11 +775,14 @@ class CanNetwork(object):
                     elif attr_def_object == 'SG_':
                         attr_def_object_type    = 'Signal'
                         attr_def_name_offset    = 2
+                    elif attr_def_object == 'BU_':
+                        attr_def_object_type    = 'Node'
+                        attr_def_name_offset    = 2
                     else: # Network
                         attr_def_object_type    = 'Network'
                         attr_def_name_offset    = 1
 
-                    attr_def_name               = line_split[attr_def_name_offset][1:-1] # remove quotation makes
+                    attr_def_name               = line_split[attr_def_name_offset][1:-1] # remove quotation markes
                     attr_def_value_type         = line_split[attr_def_name_offset + 1]
                     attr_def_default            = ''
 
@@ -600,7 +790,14 @@ class CanNetwork(object):
                         attr_def_value_type_str = 'Enumeration'
                         attr_def_value_min      = ''
                         attr_def_value_max      = ''
-                        attr_def_values         = map(lambda val:val[1:-1], line_split[attr_def_name_offset + 2:]) #remove "
+                        attr_def_values         = []
+                        if debug_enable: print("ENUM LINE: ", end=''); print(line_split)
+                        # attr_def_values         = map(lambda val:val[1:-1], line_split[attr_def_name_offset + 2:]) #remove "
+                        for i in range(attr_def_name_offset + 2, len(line_split), 1):
+                            enumvalue = line_split[i].replace('\"','').strip()
+                            if enumvalue != '' and enumvalue != None:
+                                attr_def_values.append(enumvalue)
+                        if debug_enable: print("ENUM SAVED: ", end=''); print(attr_def_values)
                     elif attr_def_value_type == 'FLOAT':
                         attr_def_value_type_str = 'Float'
                         attr_def_value_min      = float(line_split[attr_def_name_offset + 2])
@@ -622,6 +819,7 @@ class CanNetwork(object):
                         attr_def_value_max      = ''
                         attr_def_values         = []
                     else:
+                        print(line_trimmed)
                         raise ValueError("Unkown attribution definition value type: {}".format(attr_def_value_type))
 
                     self.add_attr_def(attr_def_name, attr_def_object_type, attr_def_value_type_str, \
@@ -631,7 +829,9 @@ class CanNetwork(object):
                     attr_def_name               = line_split[1][1:-1] #remove "
                     attr_def_value_type_str     = None
                     attr_def_default            = self.convert_attr_def_value(attr_def_name, line_split[2])
+                    ###print("BA_DEF_DEF: ", end='');print(line_split[2], end='')
                     attr_def                    = self.get_attr_def(attr_def_name)
+                    ###print(attr_def)
                     if attr_def is not None:
                         attr_def.default        = attr_def_default
                 # Object Attribution definition
@@ -640,13 +840,23 @@ class CanNetwork(object):
                     attr_object         = line_split[2]
                     if attr_object == 'BO_':
                         attr_msg_id     = int(line_split[3])
+                        ###print("|", line_split[4], "|", sep='', end='\n')
                         attr_value      = self.convert_attr_def_value(attr_name, line_split[4])
                         if attr_value is not None:
                             self.set_msg_attr(attr_msg_id, attr_name, attr_value)
                         else:
                             raise ValueError("Msg \'{}\' attribuition \'{}\' value is {}".format(attr_msg_id, attr_name, line_split[4])) 
                     elif attr_object == 'SG_':
-                        pass
+                        attr_msg_id     = int(line_split[3])
+                        signal_name     = line_split[4]
+                        attr_value      = self.convert_attr_def_value(attr_name, line_split[5])
+                        if attr_value is not None: 
+                            self.set_sig_attr(attr_msg_id, signal_name, attr_name, attr_value)
+                    else: 
+                        # network attribute: 
+                        attr_name       = line_split[1][1:-1]
+                        attr_value      = line_split[2].strip('\"')
+                        self.attrs[attr_name] = attr_value
                 # Value Tables
                 elif line_split[0] == 'VAL_': 
                     quote_split  = re.split('\s*\"\s*', line_trimmed)
@@ -656,14 +866,14 @@ class CanNetwork(object):
                     val_sig_name = line_split[2]
                     values = {}
                     for i in range(3, len(line_split)-1, 2):
-						try:
-							values[line_split[i+1]] = int(line_split[i])
-						except:
-							print(line_split)
-							raise
+                        try:
+                            values[int(line_split[i])] = line_split[i+1] ### swapped order so that the integer is the key, text is the value
+                        except:
+                            print(line_split)
+                            raise
                     self.set_sig_attr(val_msg_id, val_sig_name, 'values', values)
 
-        dbc.close()
+        dbcline.close()
                         
     def save(self, path=None):
         if (path == None):
@@ -678,23 +888,23 @@ class CanNetwork(object):
         book = xlrd.open_workbook(path)
         # open sheet
         if sheetname is not None:
-            print "use specified sheet: ", sheetname
+            #print ("use specified sheet: %s"%sheetname)
             sheet = book.sheet_by_name(sheetname)
         else:
             sheetname = parse_sheetname(book)
-            print "select sheet: ", sheetname
+            #print ("select sheet: ", sheetname
             sheet = book.sheet_by_name(sheetname)
 
         # import template
         if template is not None:
-            print 'use specified template: ', template
+            #print 'use specified template: ', template
             import_string = "import templates." + template + " as template"
-            exec import_string
+            exec (import_string)
         else:
-            print "parse template"
+            print ("parse template")
             template = parse_template(sheet)
-            if debug_enable:
-                print template
+            #if debug_enable:
+                #print (template)
         # ! load network information
         filename = os.path.basename(path).split(".")
         self._filename = ".".join(filename[:-1])
@@ -715,21 +925,29 @@ class CanNetwork(object):
                 message = CanMessage()
                 signals = message.signals
                 message.name = msg_name.replace(' ', '')
-                # message.type = row_values[template.msg_type_col] # todo: should set candb attribution instead
                 message.msg_id = getint(row_values[template.msg_id_col])
                 message.dlc = getint(row_values[template.msg_len_col])
+                message_type = row_values[template.msg_type_col].upper().strip()
+                if message_type == "J1939 PG (EXT. ID)":
+                    message.set_attr("VFrameFormat", "J1939PG")
+                elif message_type == "CAN STANDARD":
+                    message.set_attr("VFrameFormat", "StandardCAN")
+                elif message_type == "CAN EXTENDED":
+                    message.set_attr("VFrameFormat", "ExtendedCAN")
                 send_type = row_values[template.msg_send_type_col].upper().strip()
-                if (send_type == "CYCLE") or (send_type == "CE"):  # todo: CE is treated as cycle
+                if (send_type.upper() == "CYCLIC") or (send_type == "CE"):  # todo: CE is treated as cycle
                     try:
                         msg_cycle = getint(row_values[template.msg_cycle_col])
                     except ValueError:
-                        print "warning: message %s\'s cycle time \"%s\" is invalid, auto set to \'0\'" % (message.name, row_values[template.msg_cycle_col])
+                        print ("warning: message %s\'s cycle time \"%s\" is invalid, auto set to \'0\'" % (message.name, row_values[template.msg_cycle_col]))
                         msg_cycle = 0
                     message.set_attr("GenMsgCycleTime", msg_cycle)
-                    message.set_attr("GenMsgSendType", "cycle")
+                    message.set_attr("GenMsgSendType", "cyclic")
+                elif (send_type.upper() == "NOMSGSENDTYPE"):
+                    message.set_attr("GenMsgSendType", "noMsgSendType")
                 else:
-                    message.set_attr("GenMsgSendType", "NoSendType")
-
+                    message.set_attr("GenMsgSendType", "noMsgSendType")
+                message.comment = row_values[template.sig_comment_col].replace("\"", "\'").replace(";",",").replace("\r", '\n').replace("\n\n", "\n") # todo
                 # message sender
                 message.sender = None
                 for nodename in template.nodes:
@@ -748,6 +966,9 @@ class CanNetwork(object):
                     # This row defines a signal!
                     signal = CanSignal()
                     signal.name = sig_name.replace(' ', '')
+                    mux_value = row_values[template.sig_mltplx_col]
+                    signal.mux_indicator = mux_value if (mux_value == 'M' or mux_value == '') else 'm' + str(int(mux_value))
+                    #print(signal.mux_indicator)
                     signal.start_bit = getint(row_values[template.sig_start_bit_col])
                     signal.sig_len = getint(row_values[template.sig_len_col])
                     
@@ -770,15 +991,15 @@ class CanNetwork(object):
                     signal.min = row_values[template.sig_min_phys_col]
                     signal.max = row_values[template.sig_max_phys_col]
                     signal.unit = row_values[template.sig_unit_col]
-                    signal.init_val = getint((row_values[template.sig_init_val_col]), 0)
+                    signal.attrs["GenSigStartValue"] = getint((row_values[template.sig_init_val_col]), 0)
                     try:
                         signal.values = parse_sig_vals(row_values[template.sig_val_col])
                     except ValueError:
                         if debug_enable:
-                            print "warning: signal %s\'s value table is ignored" % signal.name
+                            print ("warning: signal %s\'s value table is ignored" % signal.name)
                         else:
                             pass
-                    signal.comment = row_values[template.sig_comment_col].replace("\"", "\'").replace("\r", '\n') # todo
+                    signal.comment = row_values[template.sig_comment_col].replace("\"", "\'").replace(";",",").replace("\r", '\n').replace("\n\n", "\n") # todo
                     # get signal receivers
                     signal.receivers = []
                     for nodename in template.nodes:
@@ -789,9 +1010,9 @@ class CanNetwork(object):
                         elif receiver == "S":
                             if message.sender == 'Vector__XXX':
                                 message.sender = nodename
-                                print "warning: message %s\'s sender is set to \"%s\" via signal" %(message.name, nodename)
+                                print ("warning: message %s\'s sender is set to \"%s\" via signal" %(message.name, nodename))
                             else:
-                                print "warning: message %s\'s sender is conflict to signal \"%s\"" %(message.name, nodename)
+                                print ("warning: message %s\'s sender is conflict to signal \"%s\"" %(message.name, nodename))
                         else:
                             pass
                     if len(signal.receivers) == 0:
@@ -819,6 +1040,7 @@ class CanMessage(object):
         self.signals = []
         self.attrs = {}
         self.receivers = []
+        self.comment = ''
 
     def __str__(self):
         para = []
@@ -830,14 +1052,21 @@ class CanMessage(object):
 
     def set_attr(self, name, value):
         self.attrs[name] = value
+        
+    def set_comment(self, comment):
+        self.comment = comment.strip()
+        
+    def append_comment(self, comment):
+        self.comment = self.comment + comment
 
 
 class CanSignal(object):
     def __init__(self, name='', start_bit=0, sig_len=1, init_val=0):
         self.name = name
+        self.mux_indicator = ''
         self.start_bit = start_bit
         self.sig_len = sig_len
-        self.init_val = init_val
+        ###self.init_val = init_val
         self.byte_order = '0'
         self.value_type = '+'
         self.factor = 1
@@ -845,12 +1074,15 @@ class CanSignal(object):
         self.min = 0
         self.max = 1
         self.unit = ''
-        self.values = {}
+        self.values = {}      ### VAL_
         self.receivers = []
-        self.comment = ''
+        self.comment = ''     ### CM_ SG_ comment information
+        self.attrs = {}      ### BA_ SG_ attribute information
+        if init_val != 0:
+            self.attrs["GenSigStartValue"] = init_val
 
     def __str__(self):
-        line = ["SG_", self.name, ":",
+        line = ["SG_", self.name + ' '*bool(self.mux_indicator) + self.mux_indicator, ":",
                 str(self.start_bit) + "|" + str(self.sig_len) + "@" + self.byte_order + self.value_type,
                 "(" + str(self.factor) + "," + str(self.offset) + ")", "[" + str(self.min) + "|" + str(self.max) + "]",
                 "\"" + str(self.unit) + "\"", ','.join(self.receivers)]
@@ -859,15 +1091,26 @@ class CanSignal(object):
     def set_attr(self, name, value):
         if name == 'values':
             self.values = value
+        elif name in ["SPN", "SigType", "GenSigInactiveValue", "GenSigSendType", "GenSigStartValue", "GenSigTimeoutValue", "SAEDocument", "SystemSignalLongSymbol"]:
+            self.attrs[name] = value
         else:
             raise ValueError("Unsupport set attr of \'{}\'".format(name))
 
     def get_attr(self, name):
         if name == 'values':
             return self.values
+        elif name in ["SPN", "SigType", "GenSigInactiveValue", "GenSigSendType", "GenSigStartValue", "GenSigTimeoutValue", "SAEDocument", "SystemSignalLongSymbol"]:
+            return self.attrs[name]
+        elif name == '':
+            return self.value_type
         else:
             raise ValueError("Unsupport set attr of \'{}\'".format(name))
 
+    def set_comment(self, comment):
+        self.comment = comment
+        
+    def append_comment(self, comment):
+        self.comment = self.comment + comment
 
 class CanAttribution(object):
     def __init__(self, name, object_type, value_type, minvalue, maxvalue, default, values=None):
@@ -899,24 +1142,29 @@ def parse_args():
     import argparse
     parse = argparse.ArgumentParser()
     subparser = parse.add_subparsers(title="subcommands")
-    
+
     parse_gen = subparser.add_parser("gen", help="Generate dbc from excle file")
     parse_gen.add_argument("filename", help="The xls file to generate dbc")
     parse_gen.add_argument("-s","--sheetname",help="set sheet name of xls",default=None)
     parse_gen.add_argument("-t","--template",help="Choose a template",default=None)
     parse_gen.add_argument("-d","--debug",help="show debug info",action="store_true", dest="debug_switch", default=False)
     parse_gen.set_defaults(func=cmd_gen)
-    
-    parse_sort = subparser.add_parser("sort", help="Sort dbc message and signals")
+
+    parse_sort = subparser.add_parser("sort", help="Sort dbc messages and signals")
     parse_sort.add_argument("filename", help="Dbc filename")
     parse_sort.add_argument("-o","--output", help="Specify output file path", default=None)
     parse_sort.set_defaults(func=cmd_sort)
-    
+
+    parse_sort = subparser.add_parser("merge", help="Merge dbc messages and signals")
+    parse_sort.add_argument("-f","--dbcfiles",   nargs="*", default=[], help="dbc filename list")
+    parse_sort.add_argument("-o","--output", help="Specify output file path", default=None)
+    parse_sort.set_defaults(func=cmd_merge)
+
     parse_cmp = subparser.add_parser("cmp", help="Compare difference bettween two dbc files")
     parse_cmp.add_argument("filename1", help="The base file to be compared with")
     parse_cmp.add_argument("filename2", help="The new file to be compared")
     parse_cmp.set_defaults(func=cmd_cmp)
-    
+
     args = parse.parse_args()
     args.func(args)
 
@@ -928,10 +1176,10 @@ def cmd_gen(args):
         can = CanNetwork()
         can.import_excel(args.filename, args.sheetname, args.template)
         can.save()
-    except IOError,e:
-        print e
-    except xlrd.biffh.XLRDError,e:
-        print e
+    except IOError as e:
+        print (e)
+    except xlrd.biffh.XLRDError as e:
+        print (e)
         
         
 def cmd_sort(args):
@@ -942,10 +1190,19 @@ def cmd_sort(args):
         can.save("sorted.dbc")
     else:
         can.save(args.output)
+        
+def cmd_merge(args):
+    can = CanNetwork()
+    for sourcefile in args.dbcfiles:
+        can.load(sourcefile)
+    if args.output is None:
+        can.save("sorted.dbc")
+    else: 
+        can.save(args.output)
 
 
 def cmd_cmp(args):
-    print "Compare function is comming soon!"
+    print ("Compare function is comming soon!")
 
 
 if __name__ == '__main__':
