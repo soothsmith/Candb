@@ -43,7 +43,7 @@ ATTR_DEFS_INIT = [
     ["Message", "GenMsgCycleTimeActive", "Integer",     0,   0,          0,                    []],
     ["Message", "GenMsgCycleTimeFast",   "Integer",     0,   0,          0,                    []],
     ["Message", "GenMsgDelayTime",       "Integer",     0,   0,          0,                    []],
-    ["Message", "GenMsgILSupport",       "Enumeration", "",  "",         "No",                 ["No",    "Yes"]],
+    ["Message", "GenMsgILSupport",       "Enumeration", "",  "",         "No",                 ["Yes",    "No"]],
     ["Message", "GenMsgNrOfRepetition",  "Integer",     0,   0,          0,                    []],
     ["Message", "GenMsgStartDelayTime",  "Integer",     0,   65535,      0,                    []],
     ["Message", "NmMessage",             "Enumeration", "",  "",         "No",                 ["No",    "Yes"]],
@@ -70,7 +70,8 @@ ATTR_DEFS_INIT = [
     ["Signal",  "GenSigSendType",        "Enumeration", "",  "",         "",                   ["cyclic", "OnChange", "OnWrite", "IfActive", "OnChangeWithRepetition", "OnWriteWithRepetition", "IfActiveWithRepetition", "NoSigSendtype"]],
     ["Signal",  "GenSigStartValue",      "Integer",     0,   0,          0,                    []],
     ["Signal",  "GenSigTimeoutValue",    "Integer",     0,   1000000000, 0,                    []],
-    ["Signal",  "SPN",                   "Integer",     0,   1000000000, 0,                    []],
+    ["Signal",  "SPN",                   "Integer",     0,   524287,     0,                    []],
+    ["Signal",  "DDI",                   "Integer",     0,   65535,      0,                    []],
     ["Signal",  "SAEDocument",           "String",      "",  "",         "J1939",              []],
     ["Message", "VFrameFormat",          "Enumeration", 0,   8,          "ExtendedCAN",        ["StandardCAN", "ExtendedCAN", "reserved", "J1939PG"]],
     ["Signal",  "SystemSignalLongSymbol","String",      "",  "",         "STRING",             []],
@@ -1091,7 +1092,7 @@ class CanSignal(object):
     def set_attr(self, name, value):
         if name == 'values':
             self.values = value
-        elif name in ["SPN", "SigType", "GenSigInactiveValue", "GenSigSendType", "GenSigStartValue", "GenSigTimeoutValue", "SAEDocument", "SystemSignalLongSymbol"]:
+        elif name in ["SPN", "DDI", "SigType", "GenSigInactiveValue", "GenSigSendType", "GenSigStartValue", "GenSigTimeoutValue", "SAEDocument", "SystemSignalLongSymbol"]:
             self.attrs[name] = value
         else:
             raise ValueError("Unsupport set attr of \'{}\'".format(name))
@@ -1099,7 +1100,7 @@ class CanSignal(object):
     def get_attr(self, name):
         if name == 'values':
             return self.values
-        elif name in ["SPN", "SigType", "GenSigInactiveValue", "GenSigSendType", "GenSigStartValue", "GenSigTimeoutValue", "SAEDocument", "SystemSignalLongSymbol"]:
+        elif name in ["SPN", "DDI", "SigType", "GenSigInactiveValue", "GenSigSendType", "GenSigStartValue", "GenSigTimeoutValue", "SAEDocument", "SystemSignalLongSymbol"]:
             return self.attrs[name]
         elif name == '':
             return self.value_type
