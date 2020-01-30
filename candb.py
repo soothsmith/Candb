@@ -1,14 +1,33 @@
 
 """\
 This module provides CAN database(*dbc) and matrix(*xls) operation functions.
-
-
+-- Convert a specific format of spreadsheet into a DBC file.
+-- Sort a DBC file by message/signal.
+-- Merge multiple DBC files into a single output DBC file.
+---   Content is loaded and may be overwritten by each 
+---   successive file in the order they appear on the command line.
+---   Hint - to ensure compatibility with the DBC file, 
+---   use the merge function on a single file and compare 
+---   input to output (attribute order is likely to be different).
+-- Compare is not yet implemented.
+Content is translated according to: 
+-- DBC File Format Documentation, Version 01/2007
+-- Example files for load/sort/write included SAE_j1939.dbc
+-- To merge dbc files, node attributes, comments, environment variables,
+---  value types have been added.
+-- Also able to read and dump Environment varaibles and value tables.
+-- Added ability to read comments spannding multiple lines (except for Nodes).
+-- Added ability to read/store multiplexing values.
+---  Added a MultiplexorIndicator column to the spreadsheet.
+-- Now allow message comments (same column in spreadsheet as for signals).
+--
 """
 import re
 import xlrd
-import sys, importlib
-import traceback
+#import sys, importlib
+#import traceback
 import os
+#from builtins import False
 #from builtins import True
 #from scipy.stats.tests.test_discrete_basic import vals
 
@@ -33,47 +52,56 @@ NEW_SYMBOLS = [
 
 
 # pre-defined attribution definitions
-#  object type    name                   value type     min  max         default               value range
+### CANdb++ complained that the attributes marked as mode=False had a "bad mode" or syntax error, thus not put into output files.
+#  object type    name                   value type     min  max         default               mode   value range
 ATTR_DEFS_INIT = [
-    ["Message", "DiagRequest",           "Enumeration", "",  "",         "No",                 ["No",    "Yes"]],
-    ["Message", "DiagResponse",          "Enumeration", "",  "",         "No",                 ["No",    "Yes"]],
-    ["Message", "DiagState",             "Enumeration", "",  "",         "No",                 ["No",    "Yes"]],
-    ["Message", "GenMsgSendType",        "Enumeration", "",  "",         "noMsgSendType",      ["cyclic", "reserved","cyclicIfActive","reserved","reserved","reserved","reserved","reserved","noMsgSendType"]],
-    ["Message", "GenMsgCycleTime",       "Integer",     0,   0,          0,                    []],
-    ["Message", "GenMsgCycleTimeActive", "Integer",     0,   0,          0,                    []],
-    ["Message", "GenMsgCycleTimeFast",   "Integer",     0,   0,          0,                    []],
-    ["Message", "GenMsgDelayTime",       "Integer",     0,   0,          0,                    []],
-    ["Message", "GenMsgILSupport",       "Enumeration", "",  "",         "No",                 ["No",    "Yes"]],
-    ["Message", "GenMsgNrOfRepetition",  "Integer",     0,   0,          0,                    []],
-    ["Message", "GenMsgStartDelayTime",  "Integer",     0,   65535,      0,                    []],
-    ["Message", "NmMessage",             "Enumeration", "",  "",         "No",                 ["No",    "Yes"]],
-    ["Network", "BusType",               "String",      "",  "",         "CAN",                []],
-    ["Network", "Manufacturer",          "String",      "",  "",         "",                   []],
-    ["Network", "NmBaseAddress",         "Hex",         0x0, 0x7FF,      0x400,                []],
-    ["Network", "NmMessageCount",        "Integer",     0,   255,        128,                  []],
-    ["Network", "NmType",                "String",      "",  "",         "",                   []],
-    ["Network", "DBName",                "String",      "",  "",         "CAN",                []],
-    ["Network", "DatabaseVersion",       "Integer",     0,   0,          0,                    []],
-    ["Network", "ProtocolType",          "String",      "",  "",         "J1939",              []],
-    ["Network", "SAE_J1939_75_SpecVersion", "String",   "",  "",         "",                   []],
-    ["Network", "SAE_J1939_21_SpecVersion", "String",   "",  "",         "",                   []], 
-    ["Network", "SAE_J1939_73_SpecVersion", "String",   "",  "",         "",                   []],
-    ["Network", "SAE_J1939_71_SpecVersion", "String",   "",  "",         "",                   []], 
-    ["Node",    "DiagStationAddress",    "Hex",         0x0, 0xFF,       0x0,                  []],
-    ["Node",    "ILUsed",                "Enumeration", "",  "",         "No",                 ["No",    "Yes"]],
-    ["Node",    "NmCAN",                 "Integer",     0,   2,          0,                    []],
-    ["Node",    "NmNode",                "Enumeration", "",  "",         "Not",                ["Not",   "Yes"]],
-    ["Node",    "NmStationAddress",      "Hex",         0x0, 0xFF,       0x0,                  []],
-    ["Node",    "NodeLayerModules",      "String",      "",  "",         "CANoeILNVector.dll", []],
-    ["Signal",  "SigType",               "Enumeration", "",  "",         "",                   ["Default", "Range", "RangeSigned", "ASCII", "Discrete", "Control", "ReferencePGN", "DTC", "StringDelimiter", "StringLength", "StringLengthControl"]],
-    ["Signal",  "GenSigInactiveValue",   "Integer",     0,   0,          0,                    []],
-    ["Signal",  "GenSigSendType",        "Enumeration", "",  "",         "",                   ["cyclic", "OnChange", "OnWrite", "IfActive", "OnChangeWithRepetition", "OnWriteWithRepetition", "IfActiveWithRepetition", "NoSigSendtype"]],
-    ["Signal",  "GenSigStartValue",      "Integer",     0,   0,          0,                    []],
-    ["Signal",  "GenSigTimeoutValue",    "Integer",     0,   1000000000, 0,                    []],
-    ["Signal",  "SPN",                   "Integer",     0,   1000000000, 0,                    []],
-    ["Signal",  "SAEDocument",           "String",      "",  "",         "J1939",              []],
-    ["Message", "VFrameFormat",          "Enumeration", 0,   8,          "ExtendedCAN",        ["StandardCAN", "ExtendedCAN", "reserved", "J1939PG"]],
-    ["Signal",  "SystemSignalLongSymbol","String",      "",  "",         "STRING",             []],
+    ["Message", "DiagRequest",           "Enumeration", "",  "",         "No",                 True,   ["No",    "Yes"]],
+    ["Message", "DiagResponse",          "Enumeration", "",  "",         "No",                 True,   ["No",    "Yes"]],
+    ["Message", "DiagState",             "Enumeration", "",  "",         "No",                 True,   ["No",    "Yes"]],
+    ["Message", "GenMsgSendType",        "Enumeration", "",  "",         "noMsgSendType",      True,   ["cyclic", "reserved","cyclicIfActive","reserved","reserved","reserved","reserved","reserved","noMsgSendType"]],
+    ["Message", "GenMsgCycleTime",       "Integer",     0,   0,          0,                    True,   []],
+    ["Message", "GenMsgCycleTimeActive", "Integer",     0,   0,          0,                    True,   []],
+    ["Message", "GenMsgCycleTimeFast",   "Integer",     0,   0,          0,                    True,   []],
+    ["Message", "GenMsgDelayTime",       "Integer",     0,   0,          0,                    True,   []],
+    ["Message", "GenMsgILSupport",       "Enumeration", "",  "",         "No",                 True,   ["Yes",    "No"]],
+    ["Message", "GenMsgNrOfRepetition",  "Integer",     0,   0,          0,                    True,   []],
+    ["Message", "GenMsgStartDelayTime",  "Integer",     0,   65535,      0,                    True,   []],
+    ["Message", "NmMessage",             "Enumeration", "",  "",         "No",                 True,   ["No",    "Yes"]],
+    ["Network", "BusType",               "String",      "",  "",         "CAN",                True,   []],
+    ["Network", "Manufacturer",          "String",      "",  "",         "",                   True,   []],  ### ???
+    ["Network", "NmBaseAddress",         "Hex",         0,  2047,        1024,                 True,   []],  ### Hex values are stored as integer, shown as int in dbc file
+    ["Network", "NmMessageCount",        "Integer",     0,   255,        128,                  True,   []],
+    ["Network", "NmType",                "String",      "",  "",         "",                   True,   []],
+    ["Network", "DBName",                "String",      "",  "",         "CAN",                True,   []],
+    ["Network", "Baudrate",              "Integer",     0,   1000000,    500000,               True,   []],
+    ["Network", "DatabaseVersion",       "String",      "",  "",         "7.5",                False,  []],   ### CANdb++ doesn't seem to like this attribute
+    ["Network", "ProtocolType",          "String",      "",  "",         "J1939",              True,   []],
+    ["Network", "SAE_J1939_75_SpecVersion", "String",   "",  "",         "",                   True,   []],
+    ["Network", "SAE_J1939_21_SpecVersion", "String",   "",  "",         "",                   True,   []], 
+    ["Network", "SAE_J1939_73_SpecVersion", "String",   "",  "",         "",                   True,   []],
+    ["Network", "SAE_J1939_71_SpecVersion", "String",   "",  "",         "",                   True,   []],
+    ["Node",    "DiagStationAddress",    "Hex",         0x0, 0xFF,       0x0,                  True,   []],
+    ["Node",    "ILUsed",                "Enumeration", "",  "",         "No",                 True,   ["No",    "Yes"]],
+    ["Node",    "NmCAN",                 "Integer",     0,   2,          0,                    True,   []],
+    ["Node",    "NmNode",                "Enumeration", "",  "",         "Not",                True,   ["Not",   "Yes"]],
+    ["Node",    "NmStationAddress",      "Hex",         0x0, 0xFF,       0x0,                  True,   []],
+    ["Node",    "NmSystemInstance",      "Integer",     0,   65535,      0,                    True,   []],
+    ["Node",    "NmJ1939SystemInstance", "Integer",     0,   65535,      0,                    True,   []], 
+    ["Node",    "NodeLayerModules",      "String",      "",  "",         "CANoeILNVector.dll", True,   []],
+    ["NodeMappedRXSignal", "GenSigTimeoutTime", "Integer", 0, 65535,     0,                    True,   []],
+    ["Signal",  "SigType",               "Enumeration", "",  "",         "",                   True,   ["Default", "Range", "RangeSigned", "ASCII", "Discrete", "Control", "ReferencePGN", "DTC", "StringDelimiter", "StringLength", "StringLengthControl"]],
+    ["Signal",  "GenSigInactiveValue",   "Integer",     0,   0,          0,                    True,   []],
+    ["Signal",  "GenSigSendType",        "Enumeration", "",  "",         "",                   True,   ["cyclic", "OnChange", "OnWrite", "IfActive", "OnChangeWithRepetition", "OnWriteWithRepetition", "IfActiveWithRepetition", "NoSigSendtype"]],
+    ["Signal",  "GenSigStartValue",      "Integer",     0,   0,          0,                    True,   []],
+    ["Signal",  "GenSigTimeoutValue",    "Integer",     0,   1000000000, 0,                    True,   []],
+    ["Signal",  "GenSigILSupport",       "Enumeration", "",  "",         "No",                 True,   ["Yes",    "No"]],
+    ["Signal",  "GenSigCycleTime",       "Integer",     0,   0,          0,                    True,   []],
+    ["Signal",  "GenSigCycleTimeActive", "Integer",     0,   0,          0,                    True,   []],
+    ["Signal",  "SPN",                   "Integer",     0,   524287,     0,                    True,   []],
+    ["Signal",  "DDI",                   "Integer",     0,   65535,      0,                    True,   []],
+    ["Signal",  "SAEDocument",           "String",      "",  "",         "J1939",              True,   []],
+    ["Message", "VFrameFormat",          "Enumeration", 0,   8,          "ExtendedCAN",        True,   ["StandardCAN", "ExtendedCAN", "reserved", "J1939PG"]],
+    ["Signal",  "SystemSignalLongSymbol","String",      "",  "",         "STRING",             True,   []],
 ]
 
 # matrix template dict
@@ -265,7 +293,7 @@ def parse_sig_vals(val_str):
     """
     sigvals = {}
     if val_str is not None and val_str != '':
-        token = re.split('[\;\:\\n]+', val_str.strip())
+        token = re.split('[\;\:\n]+', val_str.strip())
         #print(token[1], len(token))
         if len(token) >= 2:
             if len(token) % 2 == 0:
@@ -290,26 +318,26 @@ def parse_sig_vals(val_str):
         return None
 
 
-def getint(str, default=None):
+def getint(strng, default=None):
     """
-    getint(str) -> int
+    getint(strng) -> int
     
     Convert string to int number. If default is given, default value is returned 
     while str is None.
     """
-    if str == '':
+    if strng == '':
         if default==None:
             raise ValueError("None type object is unexpected")
         else:
             return default
     else:
         try:
-            val = int(str)
+            val = int(strng)
             return val
         except (ValueError, TypeError):
             try:
-                str = str.replace('0x','')
-                val = int(str, 16)
+                strng = strng.replace('0x','')
+                val = int(strng, 16)
                 return val
             except:
                 raise
@@ -332,14 +360,16 @@ def getint(str, default=None):
 
 class CanNetwork(object):
     def __init__(self, init=True):
-        self.nodes = []
+        #self.nodes = {}     ### changed to dictionary to accept comments as the values, was a list
+        self.nodeobjects = []  ### list of node objects, each node contains comment and attributes.
         self.messages = []
         self.name = '' ###'CAN'
-        self.val_tables = []
+        self.val_tables = []        ### list of dictionaries - valtablename : { number: text, ...}
         self.version = ''
         self.new_symbols = NEW_SYMBOLS
         self.attr_defs = []
-        self.attrs = {}            ###  attrs[namestring] = valuestring
+        self.attrs = {}              ###  list of attrs[namestring] = valuestring
+        self.envvars = []
         self._filename = ''
         
         if init:
@@ -352,7 +382,7 @@ class CanNetwork(object):
     def _init_attr_defs(self):
         for attr_def in ATTR_DEFS_INIT:
             self.attr_defs.append(CanAttribution(attr_def[1], attr_def[0], attr_def[2], attr_def[3], attr_def[4],
-                                                 attr_def[5], attr_def[6]))
+                                                 attr_def[5], attr_def[6], attr_def[7]))
 
     def __str__(self):
         # ! version
@@ -370,155 +400,235 @@ class CanNetwork(object):
         lines.append('\n')
 
         # ! nodes
-        line = ["BU_:"]
-        if len(self.nodes) > 0:
-            for node in self.nodes:
-                line.append(node)
-            lines.append(' '.join(line) + '\n\n\n')
-        else: 
-            lines.append(line + '\n\n\n')
+        line = ['BU_:']
+        if len(self.nodeobjects) > 0:
+            for node in self.nodeobjects:
+                line.append(node.name)
+        lines.append(' '.join(line) + '\n')
+        lines.append('\n')
+        
+        # ! Value tables, if any
+        for valtbl in self.val_tables: 
+            for valtablename in valtbl:
+                line = ["VAL_TABLE_"]
+                line.append(valtablename)
+                myvalstring = ''
+                for val_key in valtbl[valtablename]:
+                    myvalstring += " " + str(val_key) + ' \"' + valtbl[valtablename][val_key] + '\"'
+                line.append(myvalstring)
+                lines.append(' '.join(line) + ';\n')
+        lines.append('\n')
 
         # ! messages
         for msg in self.messages:
             lines.append(str(msg) + '\n\n')
-        lines.append('\n\n')
+        #lines.append('\n')
+
+        # ! message transmitters
+        for msg in self.messages: 
+            if len(msg.transmitters) > 0:
+                line = ["BO_TX_BU_"]
+                line.append(str(msg.msg_id))
+                line.append(':')
+                line.append(msg.get_transmitters())
+                lines.append(' '.join(line) + ';\n')
+        lines.append('\n')
+        
+        # ! environment variables
+        for envvar in self.envvars:
+            lines.append(str(envvar) + '\n')
+        lines.append('\n')
 
         # ! comments
-        lines.append('''CM_ " "''' + ";" + "\n")
+        lines.append('''CM_ "Content processed by CANdb.py as forked by Soothsmith"''' + ";" + "\n")
+        for node in self.nodeobjects: 
+            if node.comment != '':
+                line = ['CM_', 'BU_', node.name, '\"' + node.comment + '\";']
+                lines.append(' '.join(line) + '\n')
         for msg in self.messages:
             comment = msg.comment
             if comment != "":
-                line = ["CM_", "BO_", str(msg.msg_id), "\"" + comment + "\"" + ";"]
-                lines.append(" ".join(line) + '\n')
+                line = ['CM_', 'BO_', str(msg.msg_id), '\"' + comment + '\";']
+                lines.append(' '.join(line) + '\n')
             for sig in msg.signals:
                 comment = sig.comment
                 if comment != "":
-                    line = ["CM_", "SG_", str(msg.msg_id), sig.name, "\"" + comment + "\"" + ";"]
-                    lines.append(" ".join(line) + '\n')
+                    line = ['CM_', 'SG_', str(msg.msg_id), sig.name, '\"' + comment + '\";']
+                    lines.append(' '.join(line) + '\n')
+        for envvar in self.envvars:
+            comment = envvar.comment
+            if comment != '':
+                line = ['CM_', 'EV_', str(envvar.env_var_name), '\"' + comment + '\";']
+                lines.append(' '.join(line) + '\n')
 
         # ! attribution defines
         for attr_def in self.attr_defs:
-            line = ["BA_DEF_"]
-            obj_type = attr_def.object_type
-            if (obj_type == "Node"):
-                line.append("BU_")
-            elif (obj_type == "Message"):
-                line.append("BO_")
-            elif (obj_type == "Signal"):
-                line.append("SG_")
-            ##elif (obj_type == "Network")
-            line.append(" \"" + attr_def.name + "\"")
-            val_type = attr_def.value_type
-            if (val_type == "Enumeration"):
-                line.append("ENUM")
-                val_range = []
-                for val in attr_def.values:
-                    val_range.append("\"" + val + "\"")
-                line.append(",".join(val_range) + ";")
-            elif (val_type == "String"):
-                line.append("STRING" + " " + ";")
-            elif (val_type == "Hex"):
-                line.append("HEX")
-                line.append(str(attr_def.min))
-                line.append(str(attr_def.max) + ";")
-            elif (val_type == "Integer"):
-                line.append("INT")
-                line.append(str(attr_def.min))
-                line.append(str(attr_def.max) + ";")
-            lines.append(" ".join(line) + '\n')
+            if attr_def.mode == True:
+                if attr_def.object_type == "NodeMappedRXSignal":
+                    line = ["BA_DEF_REL_ BU_SG_REL_"]
+                else:
+                    line = ["BA_DEF_"]
+                obj_type = attr_def.object_type
+                if (obj_type == "Node"):
+                    line.append("BU_")
+                elif (obj_type == "Message"):
+                    line.append("BO_")
+                elif (obj_type == "Signal"):
+                    line.append("SG_")
+                ##elif (obj_type == "Network")
+                line.append(" \"" + attr_def.name + "\"")
+                val_type = attr_def.value_type
+                if (val_type.upper() == "ENUMERATION"):
+                    line.append("ENUM")
+                    val_range = []
+                    for val in attr_def.values:
+                        val_range.append("\"" + val + "\"")
+                    line.append(",".join(val_range) + ";")
+                elif (val_type.upper() == "STRING"):
+                    line.append("STRING" + " " + ";")
+                elif (val_type.upper() == "HEX"):
+                    line.append("HEX")     ### by definition, the HEX min/max are represented as integers
+                    line.append(str(attr_def.min))
+                    line.append(str(attr_def.max) + ";")
+                elif (val_type.upper() == "INTEGER"):
+                    line.append("INT")
+                    line.append(str(attr_def.min))
+                    line.append(str(attr_def.max) + ";")
+                elif (val_type.upper() == "FLOAT"):
+                    line.append("FLOAT")
+                    strmin  = str(int(attr_def.min)) if (attr_def.min == float(int(attr_def.min))) else str(attr_def.min)
+                    strmax  = str(int(attr_def.max)) if (attr_def.max == float(int(attr_def.max))) else str(attr_def.max)
+                    line.append(strmin)
+                    line.append(strmax + ';')
+                lines.append(" ".join(line) + '\n')
 
         # ! attribution default values
         for attr_def in self.attr_defs:
-            line = ["BA_DEF_DEF_"]
-            line.append(" \"" + attr_def.name + "\"")
-            val_type = attr_def.value_type
-            if (val_type == "Enumeration"):
-                line.append("\"" + attr_def.default + "\"" + ";")
-            elif (val_type == "String"):
-                line.append("\"" + attr_def.default + "\"" + ";")
-            elif (val_type == "Hex"):
-                line.append(str(attr_def.default) + ";")
-            elif (val_type == "Integer"):
-                line.append(str(attr_def.default) + ";")
-            lines.append(" ".join(line) + '\n')
+            if attr_def.mode == True:
+                if attr_def.object_type == "NodeMappedRXSignal":
+                    line = ["BA_DEF_DEF_REL_"]
+                else: 
+                    line = ["BA_DEF_DEF_"]
+                line.append(" \"" + attr_def.name + "\"")
+                val_type = attr_def.value_type.upper()
+                if (val_type == "ENUMERATION"):
+                    line.append("\"" + attr_def.default + "\"" + ";")
+                elif (val_type == "STRING"):
+                    line.append("\"" + attr_def.default + "\"" + ";")
+                elif (val_type == "HEX"):
+                    line.append(str(attr_def.default) + ";")
+                elif (val_type == "INTEGER"):
+                    line.append(str(attr_def.default) + ";")
+                elif (val_type == "FLOAT"):
+                    default   = str(int(attr_def.default)) if (attr_def.default == float(int(attr_def.default))) else str(attr_def.default)
+                    line.append(default + ";")
+                else:
+                    line.append('\"' + str(self.attrs_def.default) + '\";')
+                lines.append(" ".join(line) + '\n')
 
-        # ! attribution value of object
-        # build-in value "DBName"
-        ###line = ["BA_"]
-        ###line.append('''"DBName"''')
-        ###line.append(self.name + ";")
-        ###lines.append(" ".join(line) + '\n')
+        # ! attribution values of network
         for atrdefs in self.attr_defs:
-            if atrdefs.object_type == "Network":
+            if atrdefs.object_type == "Network" and atrdefs.mode == True:
                 for atr in self.attrs:
                     if atr == atrdefs.name:
+                        val_type = attr_def.value_type.upper()
                         line = ["BA_"]
                         line.append('\"' + atr + '\"')
-                        line.append('\"' + self.attrs[atr] + '\";')
+                        if val_type == "INTEGER":
+                            attrvalue = self.attrs[atr]
+                            ###strattrval  = str(int(attrvalue)) if (attrvalue == float(int(attrvalue))) else str(attrvalue)
+                            line.append(str(attrvalue) + ';')
+                        elif val_type == "STRING":
+                            line.append('\"' + self.attrs[atr] + '\";')
+                        elif val_type == "HEX":  ### HEX values are stored and represented as integers.
+                            line.append(str('0x' + self.attrs[atr] + ';'))
+                        else:
+                            line.append('\"' + self.attrs[atr] + '\";')
                         lines.append(" ".join(line) + '\n')
-            
+                        
+        # ! node attributes "BA_ attr BU_ node..."
+        for node in self.nodeobjects:
+            lines.append(str(node))
         
         # ! message attribution values
         for msg in self.messages:
             for attr_def in self.attr_defs:
-                #if (msg.attrs.has_key(attr_def.name)):
                 if attr_def.name in msg.attrs:
-                    if (msg.attrs[attr_def.name] != ''):  ### attr_def.default):
+                    if (msg.attrs[attr_def.name] != ''):
                         line = ["BA_"]
                         line.append("\"" + attr_def.name + "\"")
                         line.append("BO_")
                         line.append(str(msg.msg_id))
-                        if attr_def.value_type == "Enumeration":
+                        if attr_def.value_type.upper() == "ENUMERATION":
                             # write enum index instead of enum value
                             line.append(str(attr_def.values.index(str(msg.attrs[attr_def.name]))) + ";")
-                        elif attr_def.value_type == "String":
+                        elif attr_def.value_type.upper() == "STRING":
                             line.append('\"' + msg.attrs[attr_def.name] + "\";")
                         else:
                             line.append(str(msg.attrs[attr_def.name]) + ";")
                         lines.append(" ".join(line) + '\n')
+                        
         # ! signal attribution values
         for msg in self.messages:
             for sig in msg.signals:
                 for attr_def in self.attr_defs:
                     if attr_def.name in sig.attrs:
                         if (sig.attrs[attr_def.name] != ''):                            
-                #if sig.init_val is not None: ### and sig.init_val is not 0:
-                #    line = ["BA_"]
-                #    line.append('''"GenSigStartValue"''')
-                #    line.append("SG_")
-                #    line.append(str(msg.msg_id))
-                #    line.append(sig.name)
-                #    line.append(str(sig.init_val))
-                #    line.append(';')
-                #    lines.append(' '.join(line) + '\n')
                             line = ["BA_"] 
                             line.append('\"' + attr_def.name + '\"')
                             line.append("SG_")
                             line.append(str(msg.msg_id))
                             line.append(sig.name)
-                            if (attr_def.value_type == "Enumeration"):
+                            if (attr_def.value_type.upper() == "ENUMERATION"):
                                 line.append(str(attr_def.values.index(str(sig.attrs[attr_def.name]))) + ';')
-                            elif (attr_def.value_type == "String"):
+                            elif (attr_def.value_type.upper() == "STRING"):
                                 line.append('\"' + sig.attrs[attr_def.name] + '\";')
                             else:
-                                line.append(str(sig.attrs[attr_def.name]) + ';')
-                            #line.append(str(sig.attrs[attr]))
+                                attrvalue = sig.attrs[attr_def.name]
+                                strattrval  = str(int(attrvalue)) if (attrvalue == float(int(attrvalue))) else str(attrvalue)
+                                line.append(str(strattrval) + ';')
                             lines.append(' '.join(line) + '\n')
-        # ! Value table define
+        
+        # ! Signal Value tables
         for msg in self.messages:
             for sig in msg.signals:
                 if sig.values is not None and len(sig.values) >= 1:
                     line = ['VAL_']
                     line.append(str(msg.msg_id))
                     line.append(sig.name)
-                    #if debug_enable: print("VALUES: ", end=''); print(sig.values)
                     for key in sig.values:
                         line.append(str(key))
                         line.append('"' + sig.values[key] + '"')
-                        #line.append(str(sig.values[key]))
-                        #line.append('"'+ key +'"')
                     line.append(';')
                     lines.append(' '.join(line) + '\n')
+
+        # ! Envronment variable value tables
+        for envvar in self.envvars:
+            if len(envvar.values) > 0: 
+                line = ['VAL_'] 
+                line.append(str(envvar.env_var_name))
+                line.append(envvar.get_values_str())
+                lines.append(' '.join(line) + ';\n')
+
+        # ! Signal value types
+        for msg in self.messages:
+            for sig in msg.signals:
+                if sig.valtype is not None:
+                    line = ['SIG_VALTYPE_']
+                    line.append(str(msg.msg_id))
+                    line.append(sig.name)
+                    line.append(':')
+                    line.append(str(sig.valtype))
+                    lines.append(' '.join(line) + ';\n')
+                    
+        for msg in self.messages:
+            for sig_group in msg.sig_groups:
+                if sig_group.name != '':
+                    line = ['SIG_GROUP_']
+                    line.append(str(msg.msg_id))
+                    line.append(str(sig_group))
+                    lines.append(' '.join(line) + ';\n')
+                    
         return ''.join(lines)
 
     def add_attr_def(self, name, object_type, value_type, minvalue, maxvalue, default, values=None):
@@ -528,7 +638,7 @@ class CanNetwork(object):
                 index = i
                 break
         if index is None:
-            attr_def = CanAttribution(name, object_type, value_type, minvalue, maxvalue, default, values) 
+            attr_def = CanAttribution(name, object_type, value_type, minvalue, maxvalue, default, True, values) 
             self.attr_defs.append(attr_def)
         else:
             print("info: override default attribution definition \'{}\'".format(name))
@@ -537,8 +647,8 @@ class CanNetwork(object):
             self.attr_defs[index].min = minvalue
             self.attr_defs[index].max = maxvalue
             self.attr_defs[index].default = default
+            ### mode is left as it is
             self.attr_defs[index].values = values
-            #print(self.attr_defs[index])
 
     def get_attr_def(self, name):
         ret = None
@@ -548,6 +658,16 @@ class CanNetwork(object):
                 break
         return ret
 
+    def append_message(self, canmessage):
+        for msg in self.messages: 
+            if msg.msg_id == canmessage.msg_id:
+                msg.merge(canmessage)
+                return msg      ### CanMessage object
+        ### if the above didn't find and merge a message, then add the new one
+        self.messages.append(canmessage)
+        return canmessage
+                
+                
     def set_msg_attr(self, msg_id, attr_name, value):
         for msg in self.messages:
             if msg.msg_id == msg_id:
@@ -567,6 +687,12 @@ class CanNetwork(object):
                         break
         return value
 
+    def set_sig_group(self, msg_id, name, repetitions=1, signals=[]):
+        for msg in self.messages:
+            if msg.msg_id == msg_id:
+                msg.add_sig_group(name, repetitions, signals)
+                break
+
     def set_sig_attr(self, msg_id, sig_name, attr_name, attr_value):
         for msg in self.messages:
             if msg.msg_id == msg_id:
@@ -574,7 +700,15 @@ class CanNetwork(object):
                     if sig.name == sig_name:
                         sig.set_attr(attr_name, attr_value)
                         break
-
+                    
+    def set_sig_valtype(self, msg_id, sig_name, valtype):
+        for msg in self.messages:
+            if msg.msg_id == msg_id:
+                for sig in msg.signals:
+                    if sig.name == sig_name:
+                        ###print(msg_id, ": ", sig_name, ": ", valtype)
+                        sig.valtype = int(valtype)
+                        break
 
     def convert_attr_def_value(self, attr_def_name, value_str):
         '''
@@ -587,28 +721,51 @@ class CanNetwork(object):
         attr_def_value_type = None
         for attr_def in self.attr_defs:
             if attr_def.name == attr_def_name:
-                attr_def_value_type = attr_def.value_type
+                attr_def_value_type = attr_def.value_type.upper()
                 attr_def_values     = [attr for attr in attr_def.values]
                 if debug_enable: print(attr_def.name, attr_def_name, attr_def.values, attr_def_values)
                 break
-        if attr_def_value_type == 'Integer':
+        if attr_def_value_type == 'INTEGER':
             value  = int(value_str)
-        elif attr_def_value_type == 'Float':
+        elif attr_def_value_type == 'FLOAT':
             value  = float(value_str)
-        elif attr_def_value_type == 'String':
+        elif attr_def_value_type == 'STRING':
             value  = value_str.strip('\"')
-        elif attr_def_value_type == 'Enumeration':
+        elif attr_def_value_type == 'ENUMERATION':
             if value_str.isdigit():
                 value  = attr_def_values[int(value_str)]
             else:
                 value = value_str[1:-1]
-        elif attr_def_value_type == 'Hex':
+        elif attr_def_value_type == 'HEX':   ### HEX values are stored and represented as integers
             value  = int(value_str)
         elif attr_def_value_type is None:
             raise ValueError("Undefined attribution definition: {}".format(attr_def_name))
         else:
             raise ValueError("Unkown attribution definition value type: {}".format(attr_def_value_type))
         return value
+
+    def set_node_comment(self, nodename, comment):
+        node_found = False
+        for node in self.nodeobjects:
+            if node.name == nodename:
+                node.comment = comment
+                node_found = True
+                break
+        if node_found == False: 
+            nodeobject = Node(nodename, comment)
+            self.nodeobjects.append(nodeobject)
+            
+    def set_node_attribute(self, nodename, attrname, attrvalue):
+        node_found = False
+        for node in self.nodeobjects:
+            if node.name == nodename:
+                
+                node.attrs[attrname] = attrvalue
+                node_found = True
+                break
+        if node_found == False: 
+            nodeobject = Node(nodename, '', {attrname: attrvalue})
+            self.nodeobjects.append(nodeobject)
 
     def set_sig_comment(self, msg_id, signame, comment):
         for msg in self.messages: 
@@ -638,6 +795,29 @@ class CanNetwork(object):
                 msg.append_comment(comment)
                 break
 
+    def set_msg_transmitters(self, msg_id, transmitters=[]):
+        for msg in self.messages: 
+            if msg.msg_id == msg_id:
+                msg.transmitters = transmitters
+                break
+
+    def set_env_comment(self, ev_var_name, comment):
+        for envvar in self.envvars: 
+            if envvar.env_var_name == ev_var_name:
+                envvar.set_comment(comment)
+                break
+
+    def append_env_comment(self, ev_var_name, comment):
+        for envvar in self.envvars: 
+            if envvar.env_var_name == ev_var_name:
+                envvar.append_comment(comment)
+                break
+
+    def set_env_vals(self, ev_var_name = '', values = {}):
+        for envvar in self.envvars:
+            if envvar.env_var_name == ev_var_name:
+                envvar.values = values
+                break
 
     def sort(self, option='id'):
         messages = self.messages
@@ -655,13 +835,26 @@ class CanNetwork(object):
     def load(self, path):
         dbcline = (line.rstrip() for line in open(path, 'r'))  ### generator to read lines from the file helps with multiline comments
         
-        for line_rtrimmed in dbcline:
+        for line_rtrimmed in dbcline:                                    ### will need line_rtrimmed when reading comments to preserve indent.
             line_trimmed = line_rtrimmed.lstrip()
             line_split = re.split('[\s\(\)\[\]\|\,\:\;]+', line_trimmed) ### needs better regex to account for optional multiplexor indicator: '', 'M', 'm num', num = 0, 1, 2, ...
             if len(line_split) >= 2:
                 # Node
                 if line_split[0] == 'BU_':
-                    self.nodes.extend(line_split[1:])
+                    #self.nodes = {nodename: '' for nodename in line_split[1:]}
+                    self.nodeobjects.extend([Node(nodename) for nodename in line_split[1:]])  # create list of Node objects
+                    
+                if line_split[0] == 'VAL_TABLE_':
+                    matchvt = re.match(r'VAL_TABLE_\s+(\w+)\s+(.+);', line_trimmed)
+                    if matchvt:
+                        vt_name = matchvt.group(1).strip()
+                        valtblraw = matchvt.group(2)
+                        valtbllist = re.split(r'\"+', valtblraw)
+                        valtbllist.pop()       # remove last entry due to final quote and semicolon
+                        valtbldict   = {int(valtbllist[i].strip()): valtbllist[i+1] for i in range(0, len(valtbllist), 2)} 
+                        namedvaltbl = {vt_name: valtbldict}
+                    self.val_tables.append(namedvaltbl)
+                    
                 # Message
                 elif line_split[0] == 'BO_':
                     msg = CanMessage()
@@ -669,12 +862,12 @@ class CanNetwork(object):
                     msg.name   = line_split[2]
                     msg.dlc    = int(line_split[3])
                     msg.sender = line_split[4]
-                    self.messages.append(msg)
+                    msg = self.append_message(msg)    # if merging files, need the pointer to the original message to append/merge signals
                 # Signal
-                elif line_split[0] == 'SG_':   ### if SG_, regex "line_trimmed" to break up fields
-                    sig = CanSignal()
-                    ###                        1=name 2=Multiplexer   3=start_bit 4=len 5=endian 6=sign   7=factor       8=offset             9=min          10=max       11=unit 12=receivers
-                    ###                         (1)       (2)             (3)   (4)    (5)   (6)            (7)            (8)                 (9)            (10)          (11)     (12)
+                elif line_split[0] == 'SG_':
+                    sig = CanSignal()     ### create object from class
+                    ###                      1=name 2=Multiplexer   3=start_bit 4=len 5=endian 6=sign   7=factor        8=offset              9=min             10=max         11=unit 12=receivers
+                    ###                       (1)       (2)             (3)   (4)    (5)   (6)            (7)              (8)                 (9)               (10)            (11)     (12)
                     if debug_enable: print(line_trimmed)
                     match = re.match(r'SG_\s+(\w+)\s+([\w\d]*)\s*\:\s+(\d+)\|(\d+)\@(\d)([\+\-])\s+\(([eE\d\.\+\-]+)\,([eE\d\.\+\-]+)\)\s+\[([eE\d\.\-\+]+)\|([eE\d\.\-\+]+)]\s+\"(.*)\"\s+(.*)', line_trimmed)
                     if match:
@@ -689,83 +882,84 @@ class CanNetwork(object):
                         sig.min           = match.group(9)
                         sig.max           = match.group(10)
                         sig.unit          = match.group(11)
-                        sig.receivers     = re.split('\s+', match.group(12)) # split receivers to list
-                    #else:
-                    #    sig.name        = line_split[1]
-                    #    sig.start_bit   = int(line_split[2])
-                    #    sig.sig_len     = int(line_split[3])
-                    #    sig.byte_order  = line_split[4][:1]
-                    #    sig.value_type  = line_split[4][1:]
-                    #    sig.factor      = line_split[5]
-                    #    sig.offset      = line_split[6]
-                    #    sig.min         = line_split[7]
-                    #    sig.max         = line_split[8]
-                    #    sig.unit        = line_split[9][1:-1]  # remove quotation markes
-                    #    sig.receivers   = line_split[10:]  # receiver is a list
-                    msg.signals.append(sig)
+                        sig.receivers     = list(re.split('\s+', match.group(12))) # split receivers to list
+                        sig.use_name      = msg.name.upper() == 'VECTOR__INDEPENDENT_SIG_MSG'
+                        if debug_enable: print(str(sig))
+                    msg.add_signal(sig)
                     
-                # read in comments from Messages or Signals
+                # read in comments from Messages, Signals or Nodes
                 elif line_split[0] == 'CM_':
-                    #print(line_trimmed)
-                    match0 = re.match(r'CM_\s\"\s*\";', line_trimmed)
+                    comment_type = line_split[1]
+                    match0 = re.match(r'CM_\s\".*\";', line_trimmed)
                     if match0:
-                        #print(line_trimmed)
                         next   # throw away the generic comment
-                    match1 = re.match(r'CM_\s+(SG_|BO_)\s+(\d+)\s+([\w\d_]*)\s*\"(.+)\";$', line_trimmed) ### completed comment line ends with ";
+                    new_comment = ''
+                    match1 = re.match(r'CM_\s+(%s)\s+(\d*)\s*([\w\d_]*)\s*\"(.+)\"\s*;$' % comment_type, line_trimmed) ### completed comment line ends with ";
                     if match1:
                         end = True
                         comment_type = match1.group(1)
-                        message_id = int(match1.group(2))
-                        signal_name = match1.group(3)
+                        something = match1.group(2)
+                        message_id = int(something) if something != '' else None
                         comment_string = match1.group(4).replace("\r", "\n")
-                        if debug_enable: print("has end:", str(message_id), signal_name, comment_string)
+                        ##if debug_enable: print("has end:", str(message_id), match.group(3), comment_string)
                         # save comment to message/signal
-                        if comment_type == "BO_":
+                        if comment_type == "BU_":
+                            nodename   = match1.group(3)
+                            self.set_node_comment(nodename, comment_string)   ### nodes as list of objects
+                        elif comment_type == "EV_":
+                            envvar     = match1.group(3)
+                            self.set_env_comment(envvar, comment_string)             
+                        elif comment_type == "BO_":
                             self.set_msg_comment(message_id, comment_string)
+                            #print("BO_ one-liner", message_id, ":", new_comment)
                         elif comment_type == "SG_":
+                            signal_name = match1.group(3)
                             self.set_sig_comment(message_id, signal_name, comment_string)
-                    #                            1 = message id, 2 = signal name, 3 = comment content
                     else: 
-                        match2 = re.match(r'CM_\s+(SG_|BO_)\s+(\d+)\s+([\w\d_]*)\s*\"(.+)$', line_trimmed) ### start of comment line but no "; to finish it
+                        #               1=comment_type 2 = msg_id, 3 = signal name, 4 = comment content
+                        match2 = re.match(r'CM_\s+(%s)\s+(\d+)\s+([\w\d_]*)\s*\"(.+)$' %comment_type, line_trimmed) ### start of comment line but no "; to finish it
                         if match2: 
                             end = False
                             comment_type = match2.group(1)
                             message_id = int(match2.group(2))
                             signal_name = match2.group(3)
                             comment_string = match2.group(4)
-                            if comment_type == "BO_":
-                                self.set_msg_comment(message_id, comment_string.strip(';').strip('\"'))
-                            else:
-                                if debug_enable: print("no end:", str(message_id), signal_name, comment_string)
-                                self.set_sig_comment(message_id, signal_name, comment_string + '\n')
+                            if debug_enable: print("no end:", comment_type, str(message_id), signal_name, comment_string)
+                            new_comment += comment_string + '\n'
+                                #self.set_sig_comment(message_id, signal_name, comment_string + '\n')
                             while(end==False):
                                 line_rtrimmed = next(dbcline)                                                  ### Note - reading next line here
                                 if line_rtrimmed == '' or line_rtrimmed == '\n':                               ### blank line in comment
-                                    if comment_type == "BO_":
-                                        self.append_msg_comment(message_id, '\n')
-                                    else: 
-                                        if debug_enable: print("cont:...", str(message_id), signal_name, "null line")
-                                        self.append_sig_comment(message_id, signal_name, '\n')
+                                    if debug_enable: print("cont:...", comment_type, str(message_id), signal_name, "null line")
+                                    new_comment += '\n'
+                                        #self.append_sig_comment(message_id, signal_name, '\n')
                                 else: 
                                     match3 = re.match(r'^(?!CM_)(.+)\";$', line_rtrimmed)                      ### continued comment line does not start with CM_ and the "; is detected
                                     if match3:
                                         comment_string = match3.group(1)
+                                        new_comment += comment_string
                                         end = True
-                                        if comment_type == "BO_":
-                                            self.append_msg_comment(message_id, comment_string)
-                                        else: 
-                                            if debug_enable: print("final:  ", str(message_id), signal_name, comment_string)
-                                            self.append_sig_comment(message_id, signal_name, comment_string)
+                                        if debug_enable: print("final:  ", comment_type, str(message_id), signal_name, comment_string)
+                                            #self.append_sig_comment(message_id, signal_name, comment_string)
                                     else: 
                                         match4 = re.match(r'^(?!CM_)(.+)(?!";)$', line_rtrimmed)               ### continued comment line does not start with CM_ and no "; is detected
                                         if match4:
                                             comment_string = match4.group(1)
-                                            if comment_type == "BO_":
-                                                self.append_msg_comment(message_id, comment_string)
-                                            else: 
-                                                if debug_enable: print("cont:  ", str(message_id), signal_name, comment_string)
-                                                self.append_sig_comment(message_id, signal_name, comment_string + '\n')
-                    
+                                            new_comment += comment_string + '\n'
+                                            if debug_enable: print("cont:  ", comment_type, str(message_id), signal_name, comment_string)
+                                                #self.append_sig_comment(message_id, signal_name, comment_string + '\n')
+                            if comment_type == "BU_":
+                                nodename = match2.group(3)
+                                self.set_node_comment(nodename, new_comment)   ### nodes as list of objects
+                            elif comment_type == "EV_":
+                                envvar   = match2.group(3)
+                                self.set_env_comment(envvar, new_comment)                                        
+                            elif comment_type == "BO_":
+                                self.set_msg_comment(message_id, new_comment)
+                                if debug_enable: print("BO_ ", message_id, ":", new_comment)
+                            elif comment_type == "SG_":
+                                self.set_sig_comment(message_id, signal_name, new_comment)
+                            
                 # Attribution Definition
                 elif line_split[0] == 'BA_DEF_':
                     attr_def_object             = line_split[1]
@@ -809,7 +1003,7 @@ class CanNetwork(object):
                         attr_def_value_max      = int(float(line_split[attr_def_name_offset + 3]))
                         attr_def_values         = []
                     elif attr_def_value_type == 'HEX':
-                        attr_def_value_type_str = 'Hex'
+                        attr_def_value_type_str = 'Hex'  ### HEX values are stored and represented as integers.
                         attr_def_value_min      = int(line_split[attr_def_name_offset + 2])
                         attr_def_value_max      = int(line_split[attr_def_name_offset + 3])
                         attr_def_values         = []
@@ -825,22 +1019,20 @@ class CanNetwork(object):
                     self.add_attr_def(attr_def_name, attr_def_object_type, attr_def_value_type_str, \
                                       attr_def_value_min, attr_def_value_max, attr_def_default, attr_def_values)
                 # Attribution Definition Default Value
-                elif line_split[0] == 'BA_DEF_DEF_':
+                elif line_split[0] == 'BA_DEF_DEF_' or line_split[0] == "BA_DEF_DEF_REL_":
                     attr_def_name               = line_split[1][1:-1] #remove "
                     attr_def_value_type_str     = None
                     attr_def_default            = self.convert_attr_def_value(attr_def_name, line_split[2])
-                    ###print("BA_DEF_DEF: ", end='');print(line_split[2], end='')
                     attr_def                    = self.get_attr_def(attr_def_name)
-                    ###print(attr_def)
                     if attr_def is not None:
                         attr_def.default        = attr_def_default
+                    
                 # Object Attribution definition
                 elif line_split[0] == 'BA_':
                     attr_name           = line_split[1][1:-1] # remove "
                     attr_object         = line_split[2]
                     if attr_object == 'BO_':
                         attr_msg_id     = int(line_split[3])
-                        ###print("|", line_split[4], "|", sep='', end='\n')
                         attr_value      = self.convert_attr_def_value(attr_name, line_split[4])
                         if attr_value is not None:
                             self.set_msg_attr(attr_msg_id, attr_name, attr_value)
@@ -852,6 +1044,12 @@ class CanNetwork(object):
                         attr_value      = self.convert_attr_def_value(attr_name, line_split[5])
                         if attr_value is not None: 
                             self.set_sig_attr(attr_msg_id, signal_name, attr_name, attr_value)
+                    elif attr_object == 'BU_':
+                        nodename = line_split[3].strip()
+                        attr_value = line_split[4]
+                        ##attr_value      = self.convert_attr_def_value(attr_name, line_split[4])  ### should handle multiple attribute types, only handling as text string right now. # TO DO
+                        if debug_enable: print("Attribute: ", attr_name, ",Node:", nodename, ",attr_value:", attr_value)
+                        self.set_node_attribute(nodename, attr_name, attr_value)
                     else: 
                         # network attribute: 
                         attr_name       = line_split[1][1:-1]
@@ -862,16 +1060,71 @@ class CanNetwork(object):
                     quote_split  = re.split('\s*\"\s*', line_trimmed)
                     line_split   = re.split('\s+', quote_split[0])
                     line_split.extend(quote_split[1:-1])
-                    val_msg_id   = int(line_split[1])
-                    val_sig_name = line_split[2]
-                    values = {}
-                    for i in range(3, len(line_split)-1, 2):
-                        try:
-                            values[int(line_split[i])] = line_split[i+1] ### swapped order so that the integer is the key, text is the value
-                        except:
-                            print(line_split)
-                            raise
-                    self.set_sig_attr(val_msg_id, val_sig_name, 'values', values)
+                    if re.match(r'^\d+$', line_split[1]):
+                        ### value is fully integer, therefore msg_id/signal
+                        val_msg_id   = int(line_split[1])
+                        val_sig_name = line_split[2]
+                        values = {}
+                        for i in range(3, len(line_split)-1, 2):
+                            try:
+                                values[int(line_split[i])] = line_split[i+1] ### swapped order so that the integer is the key, text is the value
+                            except:
+                                raise
+                        self.set_sig_attr(val_msg_id, val_sig_name, 'values', values)
+                    else:
+                        ### assume name of environment variable and associated values
+                        env_var_name = line_split[1]
+                        values = {}
+                        for i in range(2, len(line_split)-1, 2):
+                            try: 
+                                values[int(line_split[i])] = line_split[i+1] ### number is key, text is value
+                            except:
+                                raise
+                        self.set_env_vals(env_var_name, values)
+                        
+                elif line_split[0] == 'EV_':   ### environment variables
+                    ###                  1-name     2-type       3-minimum        4-maximum            5-units         6-initval         7-id   8-acc-type
+                    match10 = re.match(r'EV_\s+(\w+)\:\s+(\d)\s+\[([eE\d\.\+\-]+)\|([eE\d\.\+\-]+)\]\s+\"(.*)\"\s+([eE\d\.\+\-]+)\s(\d+)\s(\w+\d)\s+(.+)\s*;', line_trimmed)
+                    if match10:
+                        env_var_name    = match10.group(1)
+                        env_var_type    = int(match10.group(2))
+                        env_var_min     = float(match10.group(3))
+                        env_var_max     = float(match10.group(4))
+                        env_var_units   = match10.group(5)
+                        env_var_init    = float(match10.group(6))
+                        env_var_id      = int(match10.group(7))
+                        env_var_acctype = match10.group(8)
+                        env_var_nodes   = match10.group(9).split(r'\s+')
+                        if debug_enable: print(env_var_name, "...", env_var_type, ",", env_var_min, ",", env_var_max, ",", env_var_units, ",", env_var_init, ",", env_var_acctype, end=' ')
+                        if debug_enable: print(' '.join(env_var_nodes), end='\n')
+                        ###                  name='',      ev_id= 0,   env_var_type=0, units='',      minimum=0,   maximum=0,  initial_value=0, access_type=0,   access_nodes=[]):
+                        envvar = EnvVariable(env_var_name, env_var_id, env_var_type,   env_var_units, env_var_min, env_var_max, env_var_init,   env_var_acctype, env_var_nodes)
+                        self.envvars.append(envvar)
+                        
+                elif line_split[0] == 'BO_TX_BU_':
+                    match11 = re.match(r'BO_TX_BU_\s+(\d+)\s*\:\s+(.+);', line_trimmed)
+                    if match11:
+                        msg_id = int(match11.group(1))
+                        trans_msg_transmitters = match11.group(2).split(r'\,+')
+                        self.set_msg_transmitters(msg_id, trans_msg_transmitters)
+                        
+                elif line_split[0] == 'SIG_VALTYPE_':
+                    match12  = re.match(r'SIG_VALTYPE_\s+(\d+)\s+(\w+)\s+\:\s+([\w\d]+)\s*;', line_trimmed)
+                    if match12:
+                        msg_id = int(match12.group(1))
+                        signame = match12.group(2)
+                        sigvaltype = int(match12.group(3))   ### 0:signed or unsigned integer, 1: 32-bit IEEE-float, 2: 64-bit IEEE-double
+                        self.set_sig_valtype(msg_id, signame, sigvaltype)
+                        
+                elif line_split[0] == 'SIG_GROUP_':
+                    match13 = re.match(r'SIG_GROUP_\s(\d+)\s+(\w+)\s+(\d+)\s+\:\s+(.+)\s*;', line_trimmed)
+                    if match13:
+                        msg_id         = int(match13.group(1))
+                        sig_group_name = match13.group(2)
+                        repetitions    = int(match13.group(3))
+                        signals_string = match13.group(4)
+                        signals = re.split(r'\s+', signals_string)
+                        self.set_sig_group(msg_id, sig_group_name, repetitions, signals)
 
         dbcline.close()
                         
@@ -912,7 +1165,7 @@ class CanNetwork(object):
         self.name = "CAN"
         
         # ! load nodes information
-        self.nodes = template.nodes.keys()
+        self.nodeobjects = {Node(nodekey) for nodekey in template.nodes.keys()}
 
         # ! load messages
         messages = self.messages
@@ -947,7 +1200,7 @@ class CanNetwork(object):
                     message.set_attr("GenMsgSendType", "noMsgSendType")
                 else:
                     message.set_attr("GenMsgSendType", "noMsgSendType")
-                message.comment = row_values[template.sig_comment_col].replace("\"", "\'").replace(";",",").replace("\r", '\n').replace("\n\n", "\n") # todo
+                message.comment = row_values[template.sig_comment_col].replace("\"", "\'").replace(";",",").replace("\r", '\n').replace("\n\n", "\n")
                 # message sender
                 message.sender = None
                 for nodename in template.nodes:
@@ -965,10 +1218,11 @@ class CanNetwork(object):
                 if (sig_name != ''):
                     # This row defines a signal!
                     signal = CanSignal()
+                    signal.set_compare_type(msg_name.upper() =='VECTOR__INDEPENDENT_SIG_MSG')  # repeat signal names allowed in this msg
                     signal.name = sig_name.replace(' ', '')
                     mux_value = row_values[template.sig_mltplx_col]
                     signal.mux_indicator = mux_value if (mux_value == 'M' or mux_value == '') else 'm' + str(int(mux_value))
-                    #print(signal.mux_indicator)
+                    ###print(signal.mux_indicator)
                     signal.start_bit = getint(row_values[template.sig_start_bit_col])
                     signal.sig_len = getint(row_values[template.sig_len_col])
                     
@@ -1023,6 +1277,49 @@ class CanNetwork(object):
                     signals.append(signal)
         self.sort();
 
+class Node(object):
+    '''
+    There would be a list of nodes, each having a comment and attributes.
+    -- A list of nodes is kept with the CanNetwork object
+    '''
+    def __init__(self, name='', comment='', attrs={}):
+        self.name = name
+        self.comment = comment
+        self.attrs = attrs
+        if debug_enable: print("new node created:", name, "comment:", comment, "attrs:", str(attrs))
+    
+    def __str__(self):
+        strnodeattributes = ''
+        for attr in self.attrs:
+            ### compare to attrtable for types.
+            line = ["BA_"]
+            line.append('\"' + attr + '\"')
+            line.append("BU_")
+            line.append(self.name)
+            line.append(str(self.attrs[attr]))
+            strnodeattribute = (' '.join(line) + ';\n')
+            strnodeattributes = strnodeattributes + strnodeattribute
+        return(strnodeattributes)
+    
+    def set_node_attribute(self, attrname, attrvalue):
+        self.attrs[attrname] = attrvalue
+        #print("new node attribute: ", self.name, "attr:", attrname, "attrvalue:", attrvalue)
+
+class SigGroup(object):
+    '''
+    A signal group is "to define that the signals of 
+    a group have to be updated in common."
+    Denoted as SIG_GROUP_ in the dbc file, but this requires the 
+    message ID specified, so only part of the string is done here.
+    '''
+    def __init__(self, name='', repetitions=1, signals=[]):
+        self.name = name                   ### string
+        self.repetitions = repetitions     ### probably left as 1, not sure what repetitions means
+        self.signals = signals             ### a list of signal names belonging to a message
+        
+    def __str__(self):
+        strsignals = ' '.join(self.signals)
+        return(self.name + ' ' + str(self.repetitions) + ' : ' + strsignals)
 
 class CanMessage(object):
     def __init__(self, name='', msg_id=0, dlc=8, sender='Vector__XXX'):
@@ -1032,15 +1329,17 @@ class CanMessage(object):
         dlc: message data length
         sender: message send node
         '''
-        self.name = name
-        self.msg_id = msg_id
+        self.name = name           ### string
+        self.msg_id = msg_id       ### integer
         self.send_type = ''
         self.dlc = dlc
-        self.sender = sender
-        self.signals = []
-        self.attrs = {}
-        self.receivers = []
-        self.comment = ''
+        self.sender = sender       ### string
+        self.signals = []          ### list of CanSignal objects
+        self.attrs = {}            ### dictionary
+        self.receivers = []        ### list
+        self.transmitters = []     ### a list for BO_TX_BU_
+        self.comment = ''          ### comment comes in separately from the message definition
+        self.sig_groups = []       ### a list of SigGroup objects
 
     def __str__(self):
         para = []
@@ -1049,35 +1348,101 @@ class CanMessage(object):
         for sig in self.signals:
             para.append(str(sig))
         return '\n '.join(para)
-
+    
+    def merge(self, canmessage):
+        '''
+        Messages are usually merged when a Message is read from a file, which is 
+        before the signals are read. But if signals are defined, they should be merged in,
+        thogh the signals may be in no particular order.
+        '''
+        print("info: Merge message: id=", self.msg_id, "Name:", self.name, end='')
+        self.name                   = canmessage.name
+        self.send_type              = canmessage.send_type
+        self.dlc                    = canmessage.dlc
+        if len(canmessage.sender) and canmessage.sender != 'Vector__XXX':  ### only overwrite if new value is a named ECU
+            print(" sender", self.sender, "overwritten wtih", canmessage.sender, end='')
+            self.sender             = canmessage.sender
+        else:
+            print()
+        if len(canmessage.signals): ### if new message has signals to merge in
+            if len(self.signals):  ### if stored message has signals
+                for signal in self.signals:       ### walk through, find matches and merge
+                    for newsig in canmessage.signals:
+                        if signal == newsig:           ### operator overriden, selective fields compared.
+                            signal.merge(newsig)
+            else:  ## just assign new signals into existing message
+                self.signals = canmessage.signals
+        self.attrs.update(canmessage.attrs)                                                    ### merge dictionaries
+        if len(canmessage.receivers):
+            self.receivers         = list(set(self.receivers.extend(canmessage.receivers)))    ### merging list to have unique values
+        if len(canmessage.transmitters):
+            self.transmitters      = list(set(self.transmitters.extend(canmessage.transmitters))) ## merging list of strings
+        if len(canmessage.sig_groups):
+            self.sig_groups        = list(set(self.sig_groups.extend(canmessage.sig_groups)))  ### is a list of multilayer dictionaries...needs more work
+        if len(self.comment) == 0:
+            self.comment           = canmessage.comment.rstrip()                               ### comments probably needs more work.
+        
+    def add_signal(self, cansignal):
+        for signal in self.signals:
+            if signal == cansignal:    ### == has been redefined CanSignal                
+                signal.merge(cansignal)
+                return
+        ### did not find a matching signal in this message, append new
+        use_name = self.name.upper() == 'VECTOR__INDEPENDENT_SIG_MSG'
+        cansignal.set_compare_type(use_name)
+        self.signals.append(cansignal)
+                
     def set_attr(self, name, value):
         self.attrs[name] = value
         
     def set_comment(self, comment):
-        self.comment = comment.strip()
-        
+        comment = comment.strip()
+        existing_comment = self.comment
+        x = existing_comment.find(comment) == None    ### existing comment is found, skip
+        if not x: 
+            self.comment = comment
+        else:
+            pass
+        ### self.comment = comment
+            
     def append_comment(self, comment):
         self.comment = self.comment + comment
 
+    def get_transmitters(self):
+        return(','.join(self.transmitters))
+    
+    def str_sig_groups(self):
+        lines = ''
+        for sig_group in self.sig_group:
+            line = ['SIG_GROUP_']
+            line.append(str(self.msg_id))
+            line.append(str(sig_group))
+            lines = lines + ' '.join(line) + ';\n'
+        return lines
+    
+    def add_sig_group(self, signal_group_name, repetitions, signals=[]):
+            signal_group = SigGroup(signal_group_name, repetitions, signals)
+            self.sig_groups.append(signal_group)
 
 class CanSignal(object):
-    def __init__(self, name='', start_bit=0, sig_len=1, init_val=0):
-        self.name = name
-        self.mux_indicator = ''
-        self.start_bit = start_bit
-        self.sig_len = sig_len
-        ###self.init_val = init_val
-        self.byte_order = '0'
-        self.value_type = '+'
-        self.factor = 1
-        self.offset = 0
-        self.min = 0
-        self.max = 1
-        self.unit = ''
-        self.values = {}      ### VAL_
-        self.receivers = []
-        self.comment = ''     ### CM_ SG_ comment information
-        self.attrs = {}      ### BA_ SG_ attribute information
+    def __init__(self, name='', start_bit=0, sig_len=1, init_val=0, use_name=False):
+        self.name = name           ### string
+        self.mux_indicator = ''    ### None, or 'M', or m0, m1, m2, m3, ...
+        self.start_bit = start_bit ### integer, start bit
+        self.sig_len = sig_len     ### integer, signal length
+        self.valtype = None        ### 0:signed or unsigned integer, 1: 32-bit IEEE-float, 2: 64-bit IEEE-double
+        self.byte_order = '0'      ### 1, 0
+        self.value_type = '+'      ### '+' unsigned, '-' signed
+        self.factor = 1            ### float, * scale factor
+        self.offset = 0            ### float, + offset, float
+        self.min = 0               ##3 float
+        self.max = 1               ### float
+        self.unit = ''             ### text units
+        self.values = {}           ### dictionary: VAL_ table describes integer: value
+        self.receivers = []        ### node names, list of strings (not the Node object)
+        self.comment = ''          ### text, CM_ SG_ comment information
+        self.attrs = {}            ### dictionary, BA_ SG_ attribute information
+        self.use_name = use_name   ### use signal name in comparison for signals
         if init_val != 0:
             self.attrs["GenSigStartValue"] = init_val
 
@@ -1087,11 +1452,63 @@ class CanSignal(object):
                 "(" + str(self.factor) + "," + str(self.offset) + ")", "[" + str(self.min) + "|" + str(self.max) + "]",
                 "\"" + str(self.unit) + "\"", ','.join(self.receivers)]
         return " ".join(line)
-
+    
+    def set_compare_type(self, use_name=False):
+        self.use_name = use_name
+        
+    def __eq__(self, cansignal):
+        '''
+        Test whether CanSignal objects are equivalent. Several fields are tested, others ignored.
+        '''
+        return_val = False
+        if (self.use_name):
+            if (self.name          == cansignal.name
+            and self.start_bit     == cansignal.start_bit         ### integer
+            and self.sig_len       == cansignal.sig_len           ### number of bits
+            and self.value_type    == cansignal.value_type        ### + unsigned, - signed
+            and self.mux_indicator == cansignal.mux_indicator):   ### None, 'M', or m0, m1, m2, m3, ...
+                return_val = True
+        else: 
+            if (self.start_bit     == cansignal.start_bit         ### integer
+            and self.sig_len       == cansignal.sig_len           ### number of bits
+            and self.value_type    == cansignal.value_type        ### + unsigned, - signed
+            and self.mux_indicator == cansignal.mux_indicator):   ### None, 'M', or m0, m1, m2, m3, ...
+                return_val = True
+        return return_val
+            
+    def merge(self, cansignal):
+        '''
+        Signals have been compared and determined to be equivalent, 
+        so merge the fields with some semblance of sanity.
+        '''
+        print("Info: Merge signal:", str(self), "with", str(cansignal))
+        ## at the time the signal is read, the commonts nor attributes will have values, they come separately
+        if len(self.name) < len(cansignal.name):   ### take the more verbose name
+            self.name = cansignal.name
+        self.mux_indicator         = cansignal.mux_indicator     ### same if __eq__ used
+        self.start_bit             = cansignal.start_bit         ### integer
+        self.sig_len               = cansignal.sig_len           ### number of bits
+        if (self.valtype == None) and (cansignal.valtype != None):
+            self.valtype           = cansignal.valtype           ### 0:signed or unsigned integer, 1: 32-bit IEEE-float, 2: 64-bit IEEE-double
+        self.byte_order            = cansignal.byte_order        ### int, 1/0
+        self.value_type            = cansignal.value_type        ### + unsigned, - signed
+        self.min                   = cansignal.min               ### 
+        self.max                   = cansignal.max               ### 
+        self.unit                  = cansignal.unit              ### 
+        if len(self.values) or len(cansignal.values):  ### merge dictionary values
+            self.values.update(cansignal.values)
+        if len(self.receivers) or len(cansignal.receivers):
+            pass
+            #self.receivers         = list(set(self.receivers.extend(cansignal.receivers)))  ### merging list to have unique values
+        if len(self.comment) == 0:
+            self.comment           = cansignal.comment.rstrip()                                   ### probably needs more work.            
+        if len(self.attrs) or len(cansignal.attrs):  ### merge dictionary values
+            self.values.update(cansignal.values)
+            
     def set_attr(self, name, value):
         if name == 'values':
             self.values = value
-        elif name in ["SPN", "SigType", "GenSigInactiveValue", "GenSigSendType", "GenSigStartValue", "GenSigTimeoutValue", "SAEDocument", "SystemSignalLongSymbol"]:
+        elif name in ["SPN", "DDI", "SigType", "GenSigInactiveValue", "GenSigSendType", "GenSigStartValue", "GenSigTimeoutValue", "SAEDocument", "SystemSignalLongSymbol", "GenSigILSupport", "GenSigCycleTime", "GenSigCycleTimeActive"]:
             self.attrs[name] = value
         else:
             raise ValueError("Unsupport set attr of \'{}\'".format(name))
@@ -1099,7 +1516,7 @@ class CanSignal(object):
     def get_attr(self, name):
         if name == 'values':
             return self.values
-        elif name in ["SPN", "SigType", "GenSigInactiveValue", "GenSigSendType", "GenSigStartValue", "GenSigTimeoutValue", "SAEDocument", "SystemSignalLongSymbol"]:
+        elif name in ["SPN", "DDI", "SigType", "GenSigInactiveValue", "GenSigSendType", "GenSigStartValue", "GenSigTimeoutValue", "SAEDocument", "SystemSignalLongSymbol", "GenSigILSupport", "GenSigCycleTime", "GenSigCycleTimeActive"]:
             return self.attrs[name]
         elif name == '':
             return self.value_type
@@ -1113,13 +1530,14 @@ class CanSignal(object):
         self.comment = self.comment + comment
 
 class CanAttribution(object):
-    def __init__(self, name, object_type, value_type, minvalue, maxvalue, default, values=None):
+    def __init__(self, name, object_type, value_type, minvalue, maxvalue, default, mode=True, values=None):
         self.name = name
         self.object_type = object_type
         self.value_type = value_type
         self.min = minvalue
         self.max = maxvalue
         self.default = default
+        self.mode = mode
         self.values = values
 
     def __str__(self):
@@ -1134,6 +1552,68 @@ class CanAttribution(object):
             for i in range(0, len(self.values)):
                 line.append("       {:d}:   {}".format(i, self.values[i]))
         return '\n'.join(line)
+
+class EnvVariable(object):
+    '''
+    EnvVariable class is intended to hold an environment variable's attributes including a list of values.
+    The spec isn't clear about what such a variable is, but they show up in files and would need to be read.
+    '''
+    access_type_text = {'unrestricted': 'DUMMY_NODE_VECTOR0', 'read': 'DUMMY_NODE_VECTOR1', 'write': 'DUMMY_NODE_VECTOR2', 'readWrite': 'DUMMY_NODE_VECTOR3'}
+    
+    str_access_type = lambda self, actp: EnvVariable.access_type_text[actp]
+    
+    def cvt_access_type_from_string(self, as_string):
+        '''
+        Convert the values like "DUMMY_NODE_VECTORX" to the understandable value for Env Variables.
+        The intent is that if Env Variables are added to a sheet in the Excel workbook, the selection would be the readable itmes not "DUMMY..." 
+        '''
+        for ac_key, ac_val in self.access_type_text.items():
+            if ac_val == as_string: 
+                return ac_key
+
+    def __init__(self, name='', ev_id= 0, env_var_type=0, units='', minimum=0, maximum=0, initial_value=0, access_type=0, access_nodes=[]):
+        ''' 
+        name: enviroment variable name
+        ev_id: id -- which is apparently arbitrary.
+        access_type is DUMMY_NODE_VECTORX but is stored as 'unrestricted'... 
+        '''
+        self.env_var_name = name            ### string
+        self.ev_id = ev_id                  ### integer
+        self.units = units                  ### string
+        self.env_var_type = env_var_type ###if env_var_type in {0: 'Integer', 1: 'Float', 2: 'String'}.keys() else 0
+        self.minimum = minimum              ### float
+        self.maximum = maximum              ### float
+        self.initial_value = initial_value  ### float
+        self.access_type = self.cvt_access_type_from_string(access_type)
+        self.access_nodes = access_nodes    ### list
+        self.values = {}                    ### these values are part of the "VAL_" lines and not part of the "EV_" line
+        self.comment = ''                   ### char string associated with the env var
+
+    def __str__(self):
+        strmin  = str(int(self.minimum)) if (self.minimum == float(int(self.minimum))) else str(self.minimum) ### drop decimal point if no meaningful content after it
+        strmax  = str(int(self.maximum)) if (self.maximum == float(int(self.maximum))) else str(self.maximum)
+        strinit = str(int(self.initial_value)) if (self.initial_value == float(int(self.initial_value))) else str(self.initial_value)
+        line = ["EV_", self.env_var_name + ":", str(self.env_var_type), '[' + strmin + '|' + strmax + ']', '\"' + self.units + '\"', strinit, str(self.ev_id), self.str_access_type(self.access_type)]
+        line.extend(self.access_nodes)
+        return ' '.join(line) + ";\n"
+
+    def set_value(self, name, value):
+        self.values[value] = name    ### values unique, names may not be
+        
+    def get_values_str(self):
+        '''
+        return the formatted values for the EnvVariable's value table 
+        '''
+        myvalstring = ''
+        for ev_val_key in self.values:
+            myvalstring += " " + str(ev_val_key) + ' \"' + self.values[ev_val_key] + '\"'
+        return myvalstring 
+    
+    def set_comment(self, comment):
+        self.comment = comment.strip()
+        
+    def append_comment(self, comment):
+        self.comment = self.comment + comment            
 
 def parse_args():
     """
@@ -1160,7 +1640,7 @@ def parse_args():
     parse_sort.add_argument("-o","--output", help="Specify output file path", default=None)
     parse_sort.set_defaults(func=cmd_merge)
 
-    parse_cmp = subparser.add_parser("cmp", help="Compare difference bettween two dbc files")
+    parse_cmp = subparser.add_parser("cmp", help="Compare difference bettween two dbc files - not yet implemented.")
     parse_cmp.add_argument("filename1", help="The base file to be compared with")
     parse_cmp.add_argument("filename2", help="The new file to be compared")
     parse_cmp.set_defaults(func=cmd_cmp)

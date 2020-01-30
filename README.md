@@ -1,7 +1,7 @@
 # Introduction
 Generate CAN dbc file with OEM defined CAN matrix (*.xls). Class `CanDatabase` represents the CAN network and the architecture is similar to Vector Candb++.
 
-# Manul
+# Manual
 ## Install
 1. Put file path of 'candb.cmd' into system evironment variables.
 2. Modify 'candb.py' file path in 'candb.cmd'.
@@ -10,6 +10,8 @@ Generate CAN dbc file with OEM defined CAN matrix (*.xls). Class `CanDatabase` r
 Several command can be used in Command Line:
 - `candb -h` show command help.
 - `candb gen` generate dbc from excel.
+- `candb sort` sorts a single dbc file
+- `candb merge` merges multiple dbc files
 
 ### Usage
 candb [-h] [-s SHEETNAME] [-t TEMPLATE] [-d] {gen} filename
