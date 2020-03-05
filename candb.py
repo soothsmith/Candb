@@ -10,6 +10,7 @@ This module provides CAN database(*dbc) and matrix(*xls) operation functions.
 ---   use the merge function on a single file and compare 
 ---   input to output (attribute order is likely to be different).
 -- Compare is not yet implemented.
+-- 
 Content is translated according to: 
 -- DBC File Format Documentation, Version 01/2007
 -- Example files for load/sort/write included SAE_j1939.dbc
@@ -21,10 +22,23 @@ Content is translated according to:
 ---  Added a MultiplexorIndicator column to the spreadsheet.
 -- Now allow message comments (same column in spreadsheet as for signals).
 --
+Updates 18-Feb-2020
+-- Improved the merge function for:
+---- The way the Nodes are merged and how they store their attributes.
+---- The way that attribute enumeration values are pulled in and stored so they reduce 
+----    or eliminate duplicates for various upper/lower-case variants, and to ensure 
+----    that they are encoded (for each input file) and decoded (from a combined list) correctly. 
+---- The SG_MUL_VAL_ records are read and dumped verbatim since I have no other information about their definition.
+---- VAL_ and VAL_TABLE_ entries (list of enumerations) loaded from files may now span multiple lines
+-- Other info: 
+---- If a single file is “merged” to output, the files will still be different because: 
+----   1. More attributes are dumped (than are read from the files) as I’ve gathered them from various files and added them to the script.
+----   2. Many of the message and signal attributes dump in a different order than how they are read (due to the way the attributes are stored).
 """
 import re
 import xlrd
-#import sys, importlib
+import sys
+#imort importlib
 #import traceback
 import os
 #from builtins import False
@@ -50,23 +64,49 @@ NEW_SYMBOLS = [
     'BU_SG_REL_', 'BU_EV_REL_', 'BU_BO_REL_', 'SG_MUL_VAL_'
 ]
 
+SignalAttributes_List = ["SPN", "DDI", "SigType", "GenSigInactiveValue", "GenSigSendType", "GenSigStartValue", "GenSigTimeoutValue", "SAEDocument", "SystemSignalLongSymbol", "GenSigILSupport", "GenSigCycleTime", "GenSigCycleTimeActive"]
+### Signal value lists: 
+Boolean_List         = ["No",    "Yes"]
+Boolean_Order        = {'NO': 0, 'YES': 1}
+
+NmNode_List          = ['Not',   'Yes']
+NmNode_Order         = {'NOT': 0, 'YES': 1}
+
+#GenMsgSendType_List  = ["Cyclic",   "cyclicX",   "spontanX",   "IfActive",   "cyclicIfActive",   "cyclicIfActiveX",   "spontanWithDelay",   "cyclicAndSpontanX",   "cyclicAndSpontanWithDelay",   "spontanWithRepetition",   "cyclicIfActiveAndSpontanWD",    "cyclicIfActiveFast",    "cyclicWithRepeatOnDemand",    "NoSigSendType",    "noMsgSendType",    "NotUsed",    "reserved"]
+#GenMsgSendType_Order = {"CYCLIC": 0,"CYCLICX": 1,"SPONTANX": 2,"IFACTIVE": 3,"CYCLICIFACTIVE": 4,"CYCLICIFACTIVEX": 5,"SPONTANWITHDELAY": 6,"CYCLICANDSPONTANX": 7,"CYCLICANDSPONTANWITHDELAY": 8,"SPONTANWITHREPETITION": 9,"CYCLICIFACTIVEANDSPONTANWD": 10,"CYCLICIFACTIVEFAST": 11,"CYCLICWITHREPEATONDEMAND": 12,"NOSIGSENDTYPE": 13,"NOMSGSENDTYPE": 14,"NOTUSED": 15,"RESERVED": 16}
+GenMsgSendType_List  = ["Cyclic",   "IfActive",   "cyclicIfActive",   "spontanWithDelay",   "cyclicAndSpontanX",   "cyclicAndSpontanWithDelay",   "spontanWithRepetition",   "cyclicIfActiveAndSpontanWD",   "cyclicIfActiveFast",   "cyclicWithRepeatOnDemand",   "NoSigSendType",    "NoMsgSendType",    "NotUsed",    "reserved"]
+GenMsgSendType_Order = {"CYCLIC": 0,"IFACTIVE": 1,"CYCLICIFACTIVE": 2,"SPONTANWITHDELAY": 3,"CYCLICANDSPONTANX": 4,"CYCLICANDSPONTANWITHDELAY": 5,"SPONTANWITHREPETITION": 6,"CYCLICIFACTIVEANDSPONTANWD": 7,"CYCLICIFACTIVEFAST": 8,"CYCLICWITHREPEATONDEMAND": 9,"NOSIGSENDTYPE": 10,"NOMSGSENDTYPE": 11,"NOTUSED": 12,"RESERVED": 13}
+
+SigType_List         = ["Default",    "Range",    "RangeSigned",    "ASCII",    "Discrete",    "Control",    "ReferencePGN",    "DTC",    "StringDelimiter",    "StringLength",    "StringLengthControl",     "MessageCounter",     "MessageChecksum"]
+SigType_Order        = {"DEFAULT": 0, "RANGE": 1, "RANGESIGNED": 2, "ASCII": 3, "DISCRETE": 4, "CONTROL": 5, "REFERENCEPGN": 6, "DTC": 7, "STRINGDELIMITER": 8, "STRINGLENGTH": 9, "STRINGLENGTHCONTROL": 10, "MESSAGECOUNTER": 11, "MESSAGECHECKSUM": 12}
+
+GenSigSendType_List  = ["Cyclic",    "OnChange",    "OnWrite",    "IfActive",    "OnChangeWithRepetition",    "OnWriteWithRepetition",    "IfActiveWithRepetition",    "NoSigSendType"]
+GenSigSendType_Order = {"CYCLIC": 0, "ONCHANGE": 1, "ONWRITE": 2, "IFACTIVE": 3, "ONCHANGEWITHREPETITION": 4, "ONWRITEWITHREPETITION": 5, "IFACTIVEWITHREPETITION": 6, "NOSIGSENDTYPE": 7}
+
+VFrameFormat_List    = ["StandardCAN",    "ExtendedCAN",    "reserved",    "J1939PG"]
+VFrameFormat_Order   = {"STANDARDCAN": 0, "EXTENDEDCAN": 1, "RESERVED": 2, "J1939PG": 3}
+
+EnumerationListTypes    = {'DiagRequest': Boolean_List,  'DiagResponse': Boolean_List,  'DiagState': Boolean_List,  'GenMsgSendType': GenMsgSendType_List,  'GenMsgILSupport': Boolean_List,  'NmNode'      : NmNode_List,
+                           'NmMessage':   Boolean_List,  'ILUsed':       Boolean_List,  'SigType':   SigType_List,  'GenSigSendType': GenSigSendType_List,  'GenSigILSupport': Boolean_List,  'VFrameFormat': VFrameFormat_List}
+EnumerationOrderTypes   = {'DiagRequest': Boolean_Order, 'DiagResponse': Boolean_Order, 'DiagState': Boolean_Order, 'GenMsgSendType': GenMsgSendType_Order, 'GenMsgILSupport': Boolean_Order, 'NmNode'      : NmNode_Order,
+                           'NmMessage':   Boolean_Order, 'ILUsed':       Boolean_Order, 'SigType':   SigType_Order, 'GenSigSendType': GenSigSendType_Order, 'GenSigILSupport': Boolean_Order, 'VFrameFormat': VFrameFormat_Order}
 
 # pre-defined attribution definitions
 ### CANdb++ complained that the attributes marked as mode=False had a "bad mode" or syntax error, thus not put into output files.
-#  object type    name                   value type     min  max         default               mode   value range
+#  object type    name                   value type     min  max         default               mode    value range          values current file
 ATTR_DEFS_INIT = [
-    ["Message", "DiagRequest",           "Enumeration", "",  "",         "No",                 True,   ["No",    "Yes"]],
-    ["Message", "DiagResponse",          "Enumeration", "",  "",         "No",                 True,   ["No",    "Yes"]],
-    ["Message", "DiagState",             "Enumeration", "",  "",         "No",                 True,   ["No",    "Yes"]],
-    ["Message", "GenMsgSendType",        "Enumeration", "",  "",         "noMsgSendType",      True,   ["cyclic", "reserved","cyclicIfActive","reserved","reserved","reserved","reserved","reserved","noMsgSendType"]],
-    ["Message", "GenMsgCycleTime",       "Integer",     0,   0,          0,                    True,   []],
+    ["Message", "DiagRequest",           "Enumeration", "",  "",         "No",                 True,   Boolean_List],        # values for the 
+    ["Message", "DiagResponse",          "Enumeration", "",  "",         "No",                 True,   Boolean_List],        # current file
+    ["Message", "DiagState",             "Enumeration", "",  "",         "No",                 True,   Boolean_List],        # are not initialized
+    ["Message", "GenMsgCycleTime",       "Integer",     0,   0,          0,                    True,   []],                  # loading each file
+    ["Message", "GenMsgSendType",        "Enumeration", "",  "",         "NoMsgSendType",      True,   GenMsgSendType_List], # but are set when 
     ["Message", "GenMsgCycleTimeActive", "Integer",     0,   0,          0,                    True,   []],
     ["Message", "GenMsgCycleTimeFast",   "Integer",     0,   0,          0,                    True,   []],
     ["Message", "GenMsgDelayTime",       "Integer",     0,   0,          0,                    True,   []],
-    ["Message", "GenMsgILSupport",       "Enumeration", "",  "",         "No",                 True,   ["Yes",    "No"]],
+    ["Message", "GenMsgILSupport",       "Enumeration", "",  "",         "No",                 True,   Boolean_List],
     ["Message", "GenMsgNrOfRepetition",  "Integer",     0,   0,          0,                    True,   []],
     ["Message", "GenMsgStartDelayTime",  "Integer",     0,   65535,      0,                    True,   []],
-    ["Message", "NmMessage",             "Enumeration", "",  "",         "No",                 True,   ["No",    "Yes"]],
+    ["Message", "NmMessage",             "Enumeration", "",  "",         "No",                 True,   Boolean_List],
     ["Network", "BusType",               "String",      "",  "",         "CAN",                True,   []],
     ["Network", "Manufacturer",          "String",      "",  "",         "",                   True,   []],  ### ???
     ["Network", "NmBaseAddress",         "Hex",         0,  2047,        1024,                 True,   []],  ### Hex values are stored as integer, shown as int in dbc file
@@ -77,30 +117,30 @@ ATTR_DEFS_INIT = [
     ["Network", "DatabaseVersion",       "String",      "",  "",         "7.5",                False,  []],   ### CANdb++ doesn't seem to like this attribute
     ["Network", "ProtocolType",          "String",      "",  "",         "J1939",              True,   []],
     ["Network", "SAE_J1939_75_SpecVersion", "String",   "",  "",         "",                   True,   []],
-    ["Network", "SAE_J1939_21_SpecVersion", "String",   "",  "",         "",                   True,   []], 
+    ["Network", "SAE_J1939_21_SpecVersion", "String",   "",  "",         "",                   True,   []],
     ["Network", "SAE_J1939_73_SpecVersion", "String",   "",  "",         "",                   True,   []],
     ["Network", "SAE_J1939_71_SpecVersion", "String",   "",  "",         "",                   True,   []],
     ["Node",    "DiagStationAddress",    "Hex",         0x0, 0xFF,       0x0,                  True,   []],
-    ["Node",    "ILUsed",                "Enumeration", "",  "",         "No",                 True,   ["No",    "Yes"]],
+    ["Node",    "ILUsed",                "Enumeration", "",  "",         "No",                 True,   Boolean_List],
     ["Node",    "NmCAN",                 "Integer",     0,   2,          0,                    True,   []],
-    ["Node",    "NmNode",                "Enumeration", "",  "",         "Not",                True,   ["Not",   "Yes"]],
+    ["Node",    "NmNode",                "Enumeration", "",  "",         "Not",                True,   NmNode_List],
     ["Node",    "NmStationAddress",      "Hex",         0x0, 0xFF,       0x0,                  True,   []],
     ["Node",    "NmSystemInstance",      "Integer",     0,   65535,      0,                    True,   []],
-    ["Node",    "NmJ1939SystemInstance", "Integer",     0,   65535,      0,                    True,   []], 
+    ["Node",    "NmJ1939SystemInstance", "Integer",     0,   65535,      0,                    True,   []],
     ["Node",    "NodeLayerModules",      "String",      "",  "",         "CANoeILNVector.dll", True,   []],
     ["NodeMappedRXSignal", "GenSigTimeoutTime", "Integer", 0, 65535,     0,                    True,   []],
-    ["Signal",  "SigType",               "Enumeration", "",  "",         "",                   True,   ["Default", "Range", "RangeSigned", "ASCII", "Discrete", "Control", "ReferencePGN", "DTC", "StringDelimiter", "StringLength", "StringLengthControl"]],
-    ["Signal",  "GenSigInactiveValue",   "Integer",     0,   0,          0,                    True,   []],
-    ["Signal",  "GenSigSendType",        "Enumeration", "",  "",         "",                   True,   ["cyclic", "OnChange", "OnWrite", "IfActive", "OnChangeWithRepetition", "OnWriteWithRepetition", "IfActiveWithRepetition", "NoSigSendtype"]],
+    ["Signal",  "SPN",                   "Integer",     0,   524287,     0,                    True,   []],
     ["Signal",  "GenSigStartValue",      "Integer",     0,   0,          0,                    True,   []],
+    ["Signal",  "SigType",               "Enumeration", "",  "",         "",                   True,   SigType_List],
+    ["Signal",  "GenSigInactiveValue",   "Integer",     0,   0,          0,                    True,   []],
+    ["Signal",  "GenSigSendType",        "Enumeration", "",  "",         "",                   True,   GenSigSendType_List],
     ["Signal",  "GenSigTimeoutValue",    "Integer",     0,   1000000000, 0,                    True,   []],
-    ["Signal",  "GenSigILSupport",       "Enumeration", "",  "",         "No",                 True,   ["Yes",    "No"]],
+    ["Signal",  "GenSigILSupport",       "Enumeration", "",  "",         "No",                 True,   Boolean_List],
     ["Signal",  "GenSigCycleTime",       "Integer",     0,   0,          0,                    True,   []],
     ["Signal",  "GenSigCycleTimeActive", "Integer",     0,   0,          0,                    True,   []],
-    ["Signal",  "SPN",                   "Integer",     0,   524287,     0,                    True,   []],
     ["Signal",  "DDI",                   "Integer",     0,   65535,      0,                    True,   []],
     ["Signal",  "SAEDocument",           "String",      "",  "",         "J1939",              True,   []],
-    ["Message", "VFrameFormat",          "Enumeration", 0,   8,          "ExtendedCAN",        True,   ["StandardCAN", "ExtendedCAN", "reserved", "J1939PG"]],
+    ["Message", "VFrameFormat",          "Enumeration", 0,   8,          "ExtendedCAN",        True,   VFrameFormat_List],
     ["Signal",  "SystemSignalLongSymbol","String",      "",  "",         "STRING",             True,   []],
 ]
 
@@ -137,6 +177,10 @@ MATRIX_SHEET_IGNORE = ["Cover", "History", "Legend", "ECU Version", ]
 ### changed from 8 to 16 based on an example file.
 NODE_NAME_MAX = 16
 
+def whoami():
+    thisscript = os.path.basename(__file__)
+    thisfunc = sys._getframe(1).f_code.co_name
+    return (thisscript + ' ' + thisfunc + "():")
 
 class MatrixTemplate(object):
     def __init__(self):
@@ -187,10 +231,10 @@ def get_xls_col(val):
         elif val <100:
             s = chr(val/26-1+0x41)+chr(val%26+0x41)
         else:
-            raise ValueError("column number too large: ", str(val))
+            raise ValueError(whoami(), "column number too large: ", str(val))
         return s
     else:
-        raise TypeError("column number only support int: ", str(val))
+        raise TypeError(whoami(), "column number only support int: ", str(val))
 
 
 def get_list_item(list_object):
@@ -210,9 +254,9 @@ def get_list_item(list_object):
             if select_index < len(list_object):
                 return list_object[select_index]
             else:
-                print ("input over range")
+                print (whoami(), "input over range")
         else:
-            print ("input invalid")
+            print (whoami(), "input invalid")
 
 
 def parse_sheetname(workbook):
@@ -255,7 +299,7 @@ def parse_template(sheet):
             #print ("table header row number: %d" % row_num
             header_row_num = row_num
     if header_row_num == 0xFFFF:
-        raise ValueError("Can't find \"Msg Name\" in this sheet")
+        raise ValueError(whoami() +" Can't find \"Msg Name\" in this sheet")
     # get header info
     template = MatrixTemplate()
     for col_num in range(0, sheet.ncols):
@@ -280,7 +324,7 @@ def parse_template(sheet):
                         raise ValueError           ### added to exit if duplicate nodenames.
                     template.nodes[value] = col
     except ValueError:
-        exit ("ValueError: Duplicate value in Node Colums: {}".format(value))
+        exit (whoami() + " ValueError: Duplicate value in Node Colums: {}".format(value))
     # print ("detected nodes: ", template.nodes
     return template
 
@@ -305,7 +349,7 @@ def parse_sig_vals(val_str):
                         sigvals[sigval] = desc
                         ####print(val, '', end='')
                     except ValueError:
-                        print ("waring: ignored signal value definition: " ,token[i], token[i+1])
+                        print (whoami(), "waring: ignored signal value definition: " ,token[i], token[i+1])
                         raise
                 ###print()
                 return sigvals
@@ -327,7 +371,7 @@ def getint(strng, default=None):
     """
     if strng == '':
         if default==None:
-            raise ValueError("None type object is unexpected")
+            raise ValueError(whoami() + " None type object is unexpected")
         else:
             return default
     else:
@@ -360,7 +404,6 @@ def getint(strng, default=None):
 
 class CanNetwork(object):
     def __init__(self, init=True):
-        #self.nodes = {}     ### changed to dictionary to accept comments as the values, was a list
         self.nodeobjects = []  ### list of node objects, each node contains comment and attributes.
         self.messages = []
         self.name = '' ###'CAN'
@@ -371,6 +414,7 @@ class CanNetwork(object):
         self.attrs = {}              ###  list of attrs[namestring] = valuestring
         self.envvars = []
         self._filename = ''
+        self.sg_mul_val_items = []   # "SG_MUL_VAL_" items are not parsed, but simply pulled in and dumped
         
         if init:
             self._init_attr_defs()
@@ -383,7 +427,7 @@ class CanNetwork(object):
         for attr_def in ATTR_DEFS_INIT:
             self.attr_defs.append(CanAttribution(attr_def[1], attr_def[0], attr_def[2], attr_def[3], attr_def[4],
                                                  attr_def[5], attr_def[6], attr_def[7]))
-
+            
     def __str__(self):
         # ! version
         lines = ['VERSION ' + r'""']
@@ -481,7 +525,7 @@ class CanNetwork(object):
                 if (val_type.upper() == "ENUMERATION"):
                     line.append("ENUM")
                     val_range = []
-                    for val in attr_def.values:
+                    for val in attr_def.values:                  ### This list may be merged from multiple files, so values may not be the same in output files. 
                         val_range.append("\"" + val + "\"")
                     line.append(",".join(val_range) + ";")
                 elif (val_type.upper() == "STRING"):
@@ -628,27 +672,76 @@ class CanNetwork(object):
                     line.append(str(msg.msg_id))
                     line.append(str(sig_group))
                     lines.append(' '.join(line) + ';\n')
-                    
-        return ''.join(lines)
 
+        for sg_mul_val_item in self.sg_mul_val_items:
+            lines.append(sg_mul_val_item + '\n')
+            
+        return ''.join(lines)
+    
+#EnumerationListTypes    = {'DiagRequest': Boolean_List,  'DiagResponse': Boolean_List,  'DiagState': Boolean_List,  'GenMsgSendType': GenMsgSendType_List,  'GenMsgILSupport': Boolean_List, 
+#                           'NmMessage':   Boolean_List,  'ILUsed':       Boolean_List,  'SigType':   SigType_List,  'GenSigSendType': GenSigSendType_List,  'GenSigILSupport': Boolean_List,  'VFrameFormat': VFrameFormat_List}
+#EnumerationOrderTypes    = {'DiagRequest': Boolean_Order, 'DiagResponse': Boolean_Order, 'DiagState': Boolean_Order, 'GenMsgSendType': GenMsgSendType_Order, 'GenMsgILSupport': Boolean_Order, 
+#                           'NmMessage':   Boolean_Order, 'ILUsed':       Boolean_Order, 'SigType':   SigType_Order, 'GenSigSendType': GenSigSendType_Order, 'GenSigILSupport': Boolean_Order, 'VFrameFormat': VFrameFormat_Order}
     def add_attr_def(self, name, object_type, value_type, minvalue, maxvalue, default, values=None):
         index = None
         for i in range (0, len(self.attr_defs)):
-            if self.attr_defs[i].name == name:
+            if self.attr_defs[i].name.upper() == name.upper():
                 index = i
                 break
         if index is None:
-            attr_def = CanAttribution(name, object_type, value_type, minvalue, maxvalue, default, True, values) 
+            attr_def = CanAttribution(name, object_type, value_type, minvalue, maxvalue, default, True, values)
+            print(whoami(), "Info: Adding attribute", name, "type", object_type, "from file.")
             self.attr_defs.append(attr_def)
         else:
-            print("info: override default attribution definition \'{}\'".format(name))
-            self.attr_defs[index].object_type = object_type
-            self.attr_defs[index].value_type  = value_type
-            self.attr_defs[index].min = minvalue
-            self.attr_defs[index].max = maxvalue
-            self.attr_defs[index].default = default
+            attr_name = self.attr_defs[index].name
+            if object_type != '' and self.attr_defs[index].object_type != object_type:
+                print(whoami(), "Info: Change object type for", name, "from", self.attr_defs[index].object_type, "to", object_type)
+                self.attr_defs[index].object_type = object_type
+            if value_type != '' and self.attr_defs[index].value_type  != value_type:
+                print(whoami(), "Info: Change value type for", name, "from", self.attr_defs[index].value_type, "to", value_type)
+                self.attr_defs[index].value_type  = value_type
+            if minvalue != '' and self.attr_defs[index].min != minvalue:
+                print(whoami(), "Info: Change minimum for", name, "from", self.attr_defs[index].min, "to", minvalue)
+                self.attr_defs[index].min = minvalue
+            if maxvalue != '' and self.attr_defs[index].max != maxvalue:
+                print(whoami(), "Info: Change maximum for", name, "from", self.attr_defs[index].max, "to", maxvalue)
+                self.attr_defs[index].max = maxvalue
+            if default != '' and default != None:
+                print(whoami(), "Info: Change default for", name, "from", self.attr_defs[index].default, " to ", default )
+                self.attr_defs[index].default = default
             ### mode is left as it is
-            self.attr_defs[index].values = values
+                                                                    # to interpret read enum values from subsequent records
+            if self.attr_defs[index].value_type == "Enumeration":
+                self.attr_defs[index].file_values = values          # if a file is being loaded, be sure to use file_values 
+                if len(self.attr_defs[index].values) == 0:          # check enum list length for 0
+                    self.attr_defs[index].values = values           # assign values as passed in because there are no previous values
+                else:
+                    #print(whoami(), attr_name, 'previous values =', self.attr_defs[index].values, 'new values =', values)
+                    if attr_name in EnumerationListTypes.keys():   # if a known enumeration type
+                        for value in values:
+                            if value.upper() not in [val.upper() for val in EnumerationListTypes[attr_name]]: # compare to the appropriate value list
+                                valueitemaslist = []
+                                valueitemaslist.append(value)  # now it's a list of a single item
+                                print(whoami(), " Info: adding value \'", value, "\' to attribute: ", name, " values ", str(self.attr_defs[index].values), sep='')
+                                valueitemasset = set(valueitemaslist)  # now a set to 'union' them
+                                self.attr_defs[index].values = list(set(self.attr_defs[index].values).union(valueitemasset))
+                                ## must also add to the appropriate order types.
+                                length = len(EnumerationOrderTypes[attr_name]) # current number of items in enum list/order 
+                                EnumerationListTypes[attr_name].append(value)
+                                EnumerationOrderTypes[attr_name][value.upper()] = length
+                                #print(attr_name, value, " ", length, EnumerationListTypes[attr_name])
+                    else:
+                        # this is not one of the predefined enumeration lists, so just merge test best we can
+                        self.attr_defs[index].values = list(set(self.attr_defs[index].values).union(set(values)))   # Merge the values
+            else:
+                if self.attr_defs[index].values != values:
+                    print(whoami(), " info: changing default attribute value for ", name, " from ", self.attr_defs[index].values, " to ",values)
+                    self.attr_defs[index].values = values
+                
+            if len(self.attr_defs[index].values) != 0:              # check enum list length for 0
+                if attr_name in EnumerationListTypes.keys():  # If it is one of the attributes associated with enumeration types
+                    # sort enumeration values based on the attribute type
+                    self.attr_defs[index].values = sorted(self.attr_defs[index].values, key=lambda v: EnumerationOrderTypes[attr_name][v.upper()])
 
     def get_attr_def(self, name):
         ret = None
@@ -722,7 +815,7 @@ class CanNetwork(object):
         for attr_def in self.attr_defs:
             if attr_def.name == attr_def_name:
                 attr_def_value_type = attr_def.value_type.upper()
-                attr_def_values     = [attr for attr in attr_def.values]
+                attr_def_values     = [attr for attr in attr_def.file_values]     ### For incoming data, use the values as defined in the present file, not the merged values for output.
                 if debug_enable: print(attr_def.name, attr_def_name, attr_def.values, attr_def_values)
                 break
         if attr_def_value_type == 'INTEGER':
@@ -734,14 +827,21 @@ class CanNetwork(object):
         elif attr_def_value_type == 'ENUMERATION':
             if value_str.isdigit():
                 value  = attr_def_values[int(value_str)]
+                # e.g. SigType_List[SigType_Order[value.upper()]]
+                try: 
+                    value = EnumerationListTypes[attr_def.name][EnumerationOrderTypes[attr_def.name][value.upper()]] # convert read text to best camel-case
+                except: 
+                    pass
+                    #print("tried to convert enum value for attribute", attr_def.name, "with value", value)
+
             else:
                 value = value_str[1:-1]
         elif attr_def_value_type == 'HEX':   ### HEX values are stored and represented as integers
             value  = int(value_str)
         elif attr_def_value_type is None:
-            raise ValueError("Undefined attribution definition: {}".format(attr_def_name))
+            raise ValueError(whoami() + "Undefined attribution definition: {}".format(attr_def_name))
         else:
-            raise ValueError("Unkown attribution definition value type: {}".format(attr_def_value_type))
+            raise ValueError(whoami() + "Unkown attribution definition value type: {}".format(attr_def_value_type))
         return value
 
     def set_node_comment(self, nodename, comment):
@@ -759,7 +859,6 @@ class CanNetwork(object):
         node_found = False
         for node in self.nodeobjects:
             if node.name == nodename:
-                
                 node.attrs[attrname] = attrvalue
                 node_found = True
                 break
@@ -830,31 +929,35 @@ class CanNetwork(object):
         elif option == 'name':
             messages.sort(key=lambda msg: msg.name)
         else:
-            raise ValueError("Invalid sort option \'{}\'".format(option))
+            raise ValueError(whoami() + "Invalid sort option \'{}\'".format(option))
 
     def load(self, path):
-        dbcline = (line.rstrip() for line in open(path, 'r'))  ### generator to read lines from the file helps with multiline comments
+        print(whoami(), "Reading: ", path)
+        dbcline = (l.rstrip('\n') for l in open(path, 'r'))  ### generator to read lines from the file helps with multiline comments
         
-        for line_rtrimmed in dbcline:                                    ### will need line_rtrimmed when reading comments to preserve indent.
+        for line in dbcline:
+            line_rtrimmed = line.rstrip()                  ### will need line_rtrimmed when reading comments to preserve indent.
             line_trimmed = line_rtrimmed.lstrip()
+            if line_trimmed == '':
+                continue
             line_split = re.split('[\s\(\)\[\]\|\,\:\;]+', line_trimmed) ### needs better regex to account for optional multiplexor indicator: '', 'M', 'm num', num = 0, 1, 2, ...
             if len(line_split) >= 2:
-                # Node
-                if line_split[0] == 'BU_':
+                if line_split[0] == 'VERSION':
+                    continue
+                elif line_split[0] == 'NS_':
+                    continue
+                elif line_split[0] == 'BS_':
+                    continue
+                # Nodes
+                elif line_split[0] == 'BU_':
+                    new_node_list = []
                     #self.nodes = {nodename: '' for nodename in line_split[1:]}
-                    self.nodeobjects.extend([Node(nodename) for nodename in line_split[1:]])  # create list of Node objects
-                    
-                if line_split[0] == 'VAL_TABLE_':
-                    matchvt = re.match(r'VAL_TABLE_\s+(\w+)\s+(.+);', line_trimmed)
-                    if matchvt:
-                        vt_name = matchvt.group(1).strip()
-                        valtblraw = matchvt.group(2)
-                        valtbllist = re.split(r'\"+', valtblraw)
-                        valtbllist.pop()       # remove last entry due to final quote and semicolon
-                        valtbldict   = {int(valtbllist[i].strip()): valtbllist[i+1] for i in range(0, len(valtbllist), 2)} 
-                        namedvaltbl = {vt_name: valtbldict}
-                    self.val_tables.append(namedvaltbl)
-                    
+                    new_node_list = line_split[1:]
+                    existing_node_name_list = [node_object.name for node_object in self.nodeobjects]
+                    for new_node_name in new_node_list: 
+                        if new_node_name not in existing_node_name_list:
+                            self.nodeobjects.append(Node(new_node_name))  # create list of Node objects
+
                 # Message
                 elif line_split[0] == 'BO_':
                     msg = CanMessage()
@@ -894,7 +997,7 @@ class CanNetwork(object):
                     if match0:
                         next   # throw away the generic comment
                     new_comment = ''
-                    match1 = re.match(r'CM_\s+(%s)\s+(\d*)\s*([\w\d_]*)\s*\"(.+)\"\s*;$' % comment_type, line_trimmed) ### completed comment line ends with ";
+                    match1 = re.match(r'CM_\s+(%s)\s+(\d*)\s*([\w\d_]*)\s*\"(.+?)\"\s*;$' % comment_type, line_trimmed) ### completed comment line ends with ";
                     if match1:
                         end = True
                         comment_type = match1.group(1)
@@ -917,7 +1020,7 @@ class CanNetwork(object):
                             self.set_sig_comment(message_id, signal_name, comment_string)
                     else: 
                         #               1=comment_type 2 = msg_id, 3 = signal name, 4 = comment content
-                        match2 = re.match(r'CM_\s+(%s)\s+(\d+)\s+([\w\d_]*)\s*\"(.+)$' %comment_type, line_trimmed) ### start of comment line but no "; to finish it
+                        match2 = re.match(r'CM_\s+(%s)\s+(\d+)\s+([\w\d_]*)\s*\"(.+)$' %comment_type, line) ### start of comment line but no "; to finish it
                         if match2: 
                             end = False
                             comment_type = match2.group(1)
@@ -934,7 +1037,7 @@ class CanNetwork(object):
                                     new_comment += '\n'
                                         #self.append_sig_comment(message_id, signal_name, '\n')
                                 else: 
-                                    match3 = re.match(r'^(?!CM_)(.+)\";$', line_rtrimmed)                      ### continued comment line does not start with CM_ and the "; is detected
+                                    match3 = re.match(r'^(?!CM_)(.*)\";$', line_rtrimmed)                      ### continued comment line does not start with CM_ and the "; is detected
                                     if match3:
                                         comment_string = match3.group(1)
                                         new_comment += comment_string
@@ -1014,7 +1117,7 @@ class CanNetwork(object):
                         attr_def_values         = []
                     else:
                         print(line_trimmed)
-                        raise ValueError("Unkown attribution definition value type: {}".format(attr_def_value_type))
+                        raise ValueError(whoami() + "Unkown attribution definition value type: {}".format(attr_def_value_type))
 
                     self.add_attr_def(attr_def_name, attr_def_object_type, attr_def_value_type_str, \
                                       attr_def_value_min, attr_def_value_max, attr_def_default, attr_def_values)
@@ -1024,8 +1127,18 @@ class CanNetwork(object):
                     attr_def_value_type_str     = None
                     attr_def_default            = self.convert_attr_def_value(attr_def_name, line_split[2])
                     attr_def                    = self.get_attr_def(attr_def_name)
-                    if attr_def is not None:
-                        attr_def.default        = attr_def_default
+                    if attr_def is not None and attr_def_default != None:
+                        if attr_def_name in EnumerationListTypes.keys():
+                            try: 
+                                attr_def_default = EnumerationListTypes[attr_def.name][EnumerationOrderTypes[attr_def.name][attr_def_default.upper()]] # convert read text to best camel-case
+                            except: 
+                                print("BA_DEF_DEF_ ... tried to convert enum value for attribute", attr_def.name, "with value", attr_def_default)
+                        if not (str(attr_def.default) == str(attr_def_default)):
+                            if str(attr_def.default) != '':
+                                print(whoami(), "Info: Update Attribute default for \'", attr_def_name, "\' from \'", attr_def.default, "\' to \'", attr_def_default, "\'", sep='')
+                            attr_def.default    = attr_def_default
+                    else: 
+                        print(whoami(), "Info: Threw away default value", attr_def_default, " for", attr_def_name, "which is not defined.")
                     
                 # Object Attribution definition
                 elif line_split[0] == 'BA_':
@@ -1037,7 +1150,7 @@ class CanNetwork(object):
                         if attr_value is not None:
                             self.set_msg_attr(attr_msg_id, attr_name, attr_value)
                         else:
-                            raise ValueError("Msg \'{}\' attribuition \'{}\' value is {}".format(attr_msg_id, attr_name, line_split[4])) 
+                            raise ValueError(whoami() + "Msg \'{}\' attribuition \'{}\' value is {}".format(attr_msg_id, attr_name, line_split[4])) 
                     elif attr_object == 'SG_':
                         attr_msg_id     = int(line_split[3])
                         signal_name     = line_split[4]
@@ -1055,32 +1168,55 @@ class CanNetwork(object):
                         attr_name       = line_split[1][1:-1]
                         attr_value      = line_split[2].strip('\"')
                         self.attrs[attr_name] = attr_value
+                        
                 # Value Tables
-                elif line_split[0] == 'VAL_': 
-                    quote_split  = re.split('\s*\"\s*', line_trimmed)
-                    line_split   = re.split('\s+', quote_split[0])
-                    line_split.extend(quote_split[1:-1])
-                    if re.match(r'^\d+$', line_split[1]):
-                        ### value is fully integer, therefore msg_id/signal
-                        val_msg_id   = int(line_split[1])
-                        val_sig_name = line_split[2]
+                elif line_split[0] == 'VAL_' or line_split[0] == 'VAL_TABLE_': 
+                    match20 = re.match(r'(VAL_|VAL_TABLE_)\s+(\d*)\s*(\w+)\s+(.+)$', line)
+                    if match20:
+                        valtabletype = match20.group(1)
+                        val_msg_id   = match20.group(2).strip()   ### will be None for Env values, integer for signal values
+                        val_msg_id   = int(val_msg_id) if re.match(r'\d+',val_msg_id) else None
+                        text         = match20.group(3)   ### will be the Signal name or the Env variable name     
+                        value_text   = match20.group(4)   ### unparsed value list - be sure to get them all before parsing
+                        match22 = re.search(';$', value_text.rstrip())
+                        end = False
+                        if match22:
+                            end = True
+                            value_text = value_text.replace(r';$', r'')
+                        #if valtabletype == 'VAL_TABLE_': print("End:", end, "vtype:", valtabletype, "id:", val_msg_id, 'name', text, "values:", value_text)
+                        while end==False:
+                            line = next(dbcline)    # get the next line to add to the attribute list
+                            match21 = re.match(r'(.*)$', line)
+                            if match21: 
+                                value_text_ext = match21.group(1)
+                                match23 = re.search(';$', value_text_ext.rstrip())
+                                if match23: 
+                                    end = True
+                                    value_text_ext = value_text_ext.replace(r';$',r'')
+                                value_text += value_text_ext
+                                #if valtabletype == 'VAL_TABLE_':print(end, "summed:", value_text)
                         values = {}
-                        for i in range(3, len(line_split)-1, 2):
-                            try:
-                                values[int(line_split[i])] = line_split[i+1] ### swapped order so that the integer is the key, text is the value
-                            except:
-                                raise
-                        self.set_sig_attr(val_msg_id, val_sig_name, 'values', values)
-                    else:
-                        ### assume name of environment variable and associated values
-                        env_var_name = line_split[1]
-                        values = {}
-                        for i in range(2, len(line_split)-1, 2):
-                            try: 
-                                values[int(line_split[i])] = line_split[i+1] ### number is key, text is value
-                            except:
-                                raise
-                        self.set_env_vals(env_var_name, values)
+                        value_list = re.split(r'\"', value_text)
+                        if ';' in value_list: value_list.remove(';')
+                        if ''  in value_list: value_list.remove('')
+                        #if valtabletype == 'VAL_TABLE_': print(valtabletype, val_msg_id, "valuelist", value_list)
+                        #print(value_list)
+                        try:
+                            values   = {int(value_list[i].strip()): value_list[i+1] for i in range(0, len(value_list)-1, 2)} 
+                        except:
+                            raise                            
+                        if valtabletype == 'VAL_':
+                            if val_msg_id == None:        ### Environment Variable value list
+                                env_var_name = text
+                                self.set_env_vals(env_var_name, values)
+                            else:                         ### Message/Signal value list
+                                val_sig_name = text
+                                self.set_sig_attr(val_msg_id, val_sig_name, 'values', values)
+                        elif valtabletype == 'VAL_TABLE_': 
+                            # reserved for VAL_TABLE_ type
+                            vt_name = text
+                            namedvaltbl = {vt_name: values}
+                            self.val_tables.append(namedvaltbl)
                         
                 elif line_split[0] == 'EV_':   ### environment variables
                     ###                  1-name     2-type       3-minimum        4-maximum            5-units         6-initval         7-id   8-acc-type
@@ -1125,6 +1261,12 @@ class CanNetwork(object):
                         signals_string = match13.group(4)
                         signals = re.split(r'\s+', signals_string)
                         self.set_sig_group(msg_id, sig_group_name, repetitions, signals)
+                        
+                elif line_split[0] == 'SG_MUL_VAL_':
+                    self.sg_mul_val_items.append(line_trimmed)
+                    
+                else:
+                    print("Unparsed: ", line_trimmed)
 
         dbcline.close()
                         
@@ -1154,7 +1296,7 @@ class CanNetwork(object):
             import_string = "import templates." + template + " as template"
             exec (import_string)
         else:
-            print ("parse template")
+            print (whoami(), "parse template")
             template = parse_template(sheet)
             #if debug_enable:
                 #print (template)
@@ -1192,7 +1334,7 @@ class CanNetwork(object):
                     try:
                         msg_cycle = getint(row_values[template.msg_cycle_col])
                     except ValueError:
-                        print ("warning: message %s\'s cycle time \"%s\" is invalid, auto set to \'0\'" % (message.name, row_values[template.msg_cycle_col]))
+                        print (whoami(), "warning: message %s\'s cycle time \"%s\" is invalid, auto set to \'0\'" % (message.name, row_values[template.msg_cycle_col]))
                         msg_cycle = 0
                     message.set_attr("GenMsgCycleTime", msg_cycle)
                     message.set_attr("GenMsgSendType", "cyclic")
@@ -1233,7 +1375,7 @@ class CanNetwork(object):
                         signal.byte_order = '0'
                     else:
                         signal.byte_order = '0'
-                        raise ValueError("Unknown signal byte order type: \"%s\""%byte_order_type) # todo: intel
+                        raise ValueError(whoami() + "Unknown signal byte order type: \"%s\""%byte_order_type) # todo: intel
                         
                     if (row_values[template.sig_value_type_col].upper() == "UNSIGNED"):
                         signal.value_type = '+'
@@ -1250,9 +1392,7 @@ class CanNetwork(object):
                         signal.values = parse_sig_vals(row_values[template.sig_val_col])
                     except ValueError:
                         if debug_enable:
-                            print ("warning: signal %s\'s value table is ignored" % signal.name)
-                        else:
-                            pass
+                            print (whoami(), "warning: signal %s\'s value table is ignored" % signal.name)
                     signal.comment = row_values[template.sig_comment_col].replace("\"", "\'").replace(";",",").replace("\r", '\n').replace("\n\n", "\n") # todo
                     # get signal receivers
                     signal.receivers = []
@@ -1264,9 +1404,9 @@ class CanNetwork(object):
                         elif receiver == "S":
                             if message.sender == 'Vector__XXX':
                                 message.sender = nodename
-                                print ("warning: message %s\'s sender is set to \"%s\" via signal" %(message.name, nodename))
+                                print (whoami(), "warning: message %s\'s sender is set to \"%s\" via signal" %(message.name, nodename))
                             else:
-                                print ("warning: message %s\'s sender is conflict to signal \"%s\"" %(message.name, nodename))
+                                print (whoami(), "warning: message %s\'s sender is conflict to signal \"%s\"" %(message.name, nodename))
                         else:
                             pass
                     if len(signal.receivers) == 0:
@@ -1282,10 +1422,13 @@ class Node(object):
     There would be a list of nodes, each having a comment and attributes.
     -- A list of nodes is kept with the CanNetwork object
     '''
-    def __init__(self, name='', comment='', attrs={}):
+    def __init__(self, name='', comment='', attrs=None):
         self.name = name
         self.comment = comment
-        self.attrs = attrs
+        if attrs == None: 
+            self.attrs = {}
+        else: 
+            self.attrs = attrs
         if debug_enable: print("new node created:", name, "comment:", comment, "attrs:", str(attrs))
     
     def __str__(self):
@@ -1353,9 +1496,9 @@ class CanMessage(object):
         '''
         Messages are usually merged when a Message is read from a file, which is 
         before the signals are read. But if signals are defined, they should be merged in,
-        thogh the signals may be in no particular order.
+        though the signals may be in no particular order.
         '''
-        print("info: Merge message: id=", self.msg_id, "Name:", self.name, end='')
+        print(whoami(), "info: Merge message: id=", self.msg_id, "Name:", self.name, end='')
         self.name                   = canmessage.name
         self.send_type              = canmessage.send_type
         self.dlc                    = canmessage.dlc
@@ -1399,7 +1542,7 @@ class CanMessage(object):
         comment = comment.strip()
         existing_comment = self.comment
         x = existing_comment.find(comment) == None    ### existing comment is found, skip
-        if not x: 
+        if not x:
             self.comment = comment
         else:
             pass
@@ -1481,7 +1624,7 @@ class CanSignal(object):
         Signals have been compared and determined to be equivalent, 
         so merge the fields with some semblance of sanity.
         '''
-        print("Info: Merge signal:", str(self), "with", str(cansignal))
+        print(whoami(), "Info: Merge signal:", str(self), "with", str(cansignal))
         ## at the time the signal is read, the commonts nor attributes will have values, they come separately
         if len(self.name) < len(cansignal.name):   ### take the more verbose name
             self.name = cansignal.name
@@ -1508,7 +1651,7 @@ class CanSignal(object):
     def set_attr(self, name, value):
         if name == 'values':
             self.values = value
-        elif name in ["SPN", "DDI", "SigType", "GenSigInactiveValue", "GenSigSendType", "GenSigStartValue", "GenSigTimeoutValue", "SAEDocument", "SystemSignalLongSymbol", "GenSigILSupport", "GenSigCycleTime", "GenSigCycleTimeActive"]:
+        elif name in SignalAttributes_List: ###["SPN", "DDI", "SigType", "GenSigInactiveValue", "GenSigSendType", "GenSigStartValue", "GenSigTimeoutValue", "SAEDocument", "SystemSignalLongSymbol", "GenSigILSupport", "GenSigCycleTime", "GenSigCycleTimeActive"]:
             self.attrs[name] = value
         else:
             raise ValueError("Unsupport set attr of \'{}\'".format(name))
@@ -1516,7 +1659,7 @@ class CanSignal(object):
     def get_attr(self, name):
         if name == 'values':
             return self.values
-        elif name in ["SPN", "DDI", "SigType", "GenSigInactiveValue", "GenSigSendType", "GenSigStartValue", "GenSigTimeoutValue", "SAEDocument", "SystemSignalLongSymbol", "GenSigILSupport", "GenSigCycleTime", "GenSigCycleTimeActive"]:
+        elif name in SignalAttributes_List:   ###["SPN", "DDI", "SigType", "GenSigInactiveValue", "GenSigSendType", "GenSigStartValue", "GenSigTimeoutValue", "SAEDocument", "SystemSignalLongSymbol", "GenSigILSupport", "GenSigCycleTime", "GenSigCycleTimeActive"]:
             return self.attrs[name]
         elif name == '':
             return self.value_type
@@ -1539,6 +1682,7 @@ class CanAttribution(object):
         self.default = default
         self.mode = mode
         self.values = values
+        self.file_values = values
 
     def __str__(self):
         line = ["name: {}".format(self.name)]
@@ -1550,6 +1694,10 @@ class CanAttribution(object):
         line.append("values:")
         if self.value_type == "Enumeration" and self.values is not None:
             for i in range(0, len(self.values)):
+                line.append("       {:d}:   {}".format(i, self.values[i]))
+                line.append("values:")
+        if self.value_type == "Enumeration" and self.values is not None:
+            for i in range(0, len(self.values_from_file)):
                 line.append("       {:d}:   {}".format(i, self.values[i]))
         return '\n'.join(line)
 
@@ -1565,7 +1713,7 @@ class EnvVariable(object):
     def cvt_access_type_from_string(self, as_string):
         '''
         Convert the values like "DUMMY_NODE_VECTORX" to the understandable value for Env Variables.
-        The intent is that if Env Variables are added to a sheet in the Excel workbook, the selection would be the readable itmes not "DUMMY..." 
+        The intent is that if Env Variables are added to a sheet in the Excel workbook, the selection would be the readable items not "DUMMY..." 
         '''
         for ac_key, ac_val in self.access_type_text.items():
             if ac_val == as_string: 
@@ -1687,5 +1835,4 @@ def cmd_cmp(args):
 
 if __name__ == '__main__':
     parse_args()
-
 
