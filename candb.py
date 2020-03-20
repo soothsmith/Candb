@@ -997,7 +997,7 @@ class CanNetwork(object):
                     if match0:
                         next   # throw away the generic comment
                     new_comment = ''
-                    match1 = re.match(r'CM_\s+(%s)\s+(\d*)\s*([\w\d_]*)\s*\"(.+?)\"\s*;$' % comment_type, line_trimmed) ### completed comment line ends with ";
+                    match1 = re.match(r'CM_\s+(%s)\s+(\d*)\s*([\w\d_]*)\s*\"(.+?)\"\s*;$' %comment_type, line_trimmed) ### completed comment line ends with ";
                     if match1:
                         end = True
                         comment_type = match1.group(1)
@@ -1045,7 +1045,7 @@ class CanNetwork(object):
                                         if debug_enable: print("final:  ", comment_type, str(message_id), signal_name, comment_string)
                                             #self.append_sig_comment(message_id, signal_name, comment_string)
                                     else: 
-                                        match4 = re.match(r'^(?!CM_)(.+)(?!";)$', line_rtrimmed)               ### continued comment line does not start with CM_ and no "; is detected
+                                        match4 = re.match(r'^(?!CM_)(.+)(?!\";)$', line_rtrimmed)               ### continued comment line does not start with CM_ and no "; is detected
                                         if match4:
                                             comment_string = match4.group(1)
                                             new_comment += comment_string + '\n'
@@ -1273,6 +1273,7 @@ class CanNetwork(object):
     def save(self, path=None):
         if (path == None):
             file = open(self._filename + ".dbc", "w")
+            print("printing to:", self._filename + ".dbc")
         else:
             file = open(path, 'w')
         # file.write(unicode.encode(str(self), "utf-8"))
@@ -1302,7 +1303,8 @@ class CanNetwork(object):
                 #print (template)
         # ! load network information
         filename = os.path.basename(path).split(".")
-        self._filename = ".".join(filename[:-1])
+        fullpath = os.path.dirname(os.path.abspath(path)) + "\\"
+        self._filename = fullpath + ".".join(filename[:-1])
         #self.name = ".".join(filename[:-1]).replace(" ", "_").replace('.', '_').replace('-', '_')  # use filename as default DBName
         self.name = "CAN"
         
@@ -1337,11 +1339,11 @@ class CanNetwork(object):
                         print (whoami(), "warning: message %s\'s cycle time \"%s\" is invalid, auto set to \'0\'" % (message.name, row_values[template.msg_cycle_col]))
                         msg_cycle = 0
                     message.set_attr("GenMsgCycleTime", msg_cycle)
-                    message.set_attr("GenMsgSendType", "cyclic")
+                    message.set_attr("GenMsgSendType", "Cyclic")
                 elif (send_type.upper() == "NOMSGSENDTYPE"):
-                    message.set_attr("GenMsgSendType", "noMsgSendType")
+                    message.set_attr("GenMsgSendType", "NoMsgSendType")
                 else:
-                    message.set_attr("GenMsgSendType", "noMsgSendType")
+                    message.set_attr("GenMsgSendType", "NoMsgSendType")
                 message.comment = row_values[template.sig_comment_col].replace("\"", "\'").replace(";",",").replace("\r", '\n').replace("\n\n", "\n")
                 # message sender
                 message.sender = None
@@ -1376,11 +1378,20 @@ class CanNetwork(object):
                     else:
                         signal.byte_order = '0'
                         raise ValueError(whoami() + "Unknown signal byte order type: \"%s\""%byte_order_type) # todo: intel
-                        
-                    if (row_values[template.sig_value_type_col].upper() == "UNSIGNED"):
+                    
+                    signal_value_type = row_values[template.sig_value_type_col].upper()
+                    if (signal_value_type == "UNSIGNED"):
                         signal.value_type = '+'
-                    else:
+                        signal.valtype    = None     # not float
+                    elif (signal_value_type == "SIGNED"):
                         signal.value_type = '-'
+                        signal.valtype    = None     # not float
+                    elif (signal_value_type == "IEEE FLOAT"):
+                        signal.value_type = '-'
+                        signal.valtype    = 1     # 32-bit IEEE float
+                    elif (signal_value_type == "IEEE DOUBLE"):
+                        signal.value_type = '-'
+                        signal.valtype    = 2     # 64-bit IEEE float
                         
                     signal.factor = row_values[template.sig_factor_col]
                     signal.offset = row_values[template.sig_offset_col]
